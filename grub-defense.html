@@ -1,0 +1,2714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Grub Defense — prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #dfe7d6;
+  --surface: #f3f6ee;
+  --text: #1f2b19;
+  --muted: #5b6a52;
+  --line: #c3cfb7;
+  --primary: #d98f1f;
+  --primary-text: #2a1a03;
+  --danger: #b8323d;
+  --board: #cdd8c1;
+  --backdrop: #aeb9a3;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #172014; --surface: #222d1d; --text: #e4ecdb; --muted: #9aab8e;
+    --line: #34432c; --primary: #e9a43a; --primary-text: #241503; --danger: #e0606a;
+    --board: #1b2617; --backdrop: #0b1009; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #172014; --surface: #222d1d; --text: #e4ecdb; --muted: #9aab8e;
+  --line: #34432c; --primary: #e9a43a; --primary-text: #241503; --danger: #e0606a;
+  --board: #1b2617; --backdrop: #0b1009; color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  height: 100%; margin: 0; background: var(--backdrop); color: var(--text);
+  font-family: "Baloo 2", "Trebuchet MS", system-ui, sans-serif;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+}
+/* the game is laid out once in a fixed 450x800 (9:16) design frame, then scaled as a whole (fitFrame sets
+   --k) so every element keeps the same proportions at any window size; on a phone-shaped or narrow screen
+   the frame fills the screen (450 wide, taller to match) instead */
+#app {
+  position: relative; display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+  width: 450px; height: var(--fh, 800px); transform: scale(var(--k, 1)); background: var(--bg);
+  border: 2px solid var(--line); border-radius: 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  container-type: inline-size;
+}
+#app.full { border: 0; border-radius: 0; box-shadow: none; }
+/* the stat bar and action buttons belong to Gameplay only; Home and the Workshop get the whole frame */
+#app.nogame > header, #app.nogame > footer { display: none; }
+/* stat bar: fixed columns so changing numbers never push anything around. Wave on the left, the phase text in
+   the middle, loot right-aligned on the right, and health or the enemy limit centred along the bottom */
+header {
+  display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 2px 8px; align-items: start;
+  padding: 8px 14px 6px; background: var(--surface); border-bottom: 1px solid var(--line);
+  font-size: 15px; line-height: 1.2; font-variant-numeric: tabular-nums;
+}
+header .stat { white-space: nowrap; }
+header .stat b { font-weight: 800; font-size: 18px; }
+header .stat span { color: var(--muted); margin-left: 3px; }
+header .hr { text-align: right; }
+header .hb { grid-column: 1 / -1; display: flex; justify-content: center; gap: 14px; margin-top: 2px; }
+#wave b { font-size: 20px; }
+#phase { align-self: center; text-align: center; color: var(--muted); font-weight: 700; font-size: 13px; line-height: 1.15; }
+/* gold and charms sit in one line right above Summon, split at its centre: gold grows leftward, charms rightward.
+   Each half clips rather than wrapping, so nothing else moves */
+#purse { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; font-size: 15px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+#purse .stat { position: relative; white-space: nowrap; min-width: 0; } /* not clipped, so the coin pop can show */
+#purse #gold { text-align: right; }
+#purse .clip { overflow: hidden; }
+#purse b { font-weight: 800; font-size: 18px; }
+#purse span { color: var(--muted); margin-left: 3px; }
+/* end of a wave: what it earned pops up centred above the gold and charms, with a breakdown underneath, then fades */
+.coinpop {
+  position: absolute; left: 0; right: 0; bottom: 100%; width: max-content; max-width: 100%; margin: 0 auto 6px;
+  z-index: 4; white-space: nowrap; pointer-events: none; text-align: center;
+  padding: 1px 10px 2px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15); font-size: 15px; font-weight: 800; color: #b8860b;
+  animation: coinpop 2.6s ease-out forwards;
+}
+.coinpop small { display: block; font-size: 11px; font-weight: 700; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.coinpop i {
+  display: inline-block; width: 13px; height: 13px; margin-right: 3px; vertical-align: -2px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff6c8 0 18%, #ffd34d 22%); border: 1.5px solid #b8860b;
+}
+@keyframes coinpop { 0% { opacity: 0; transform: translateY(8px) scale(0.85); } 12% { opacity: 1; transform: none; } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px); } }
+@media (prefers-reduced-motion: reduce) { .coinpop { animation-name: coinfade; } }
+@keyframes coinfade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+#hp.danger b, #enemies.danger b { color: var(--danger); }
+main { position: relative; flex: 1; min-height: 0; background: var(--board); }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+/* overlay over the whole frame for effects that leave the board (new units flying out of a button) */
+#zoomctl { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); z-index: 3; display: flex; flex-direction: column; gap: 6px; }
+#zoomctl button { width: 40px; height: 40px; min-height: 0; padding: 0; font-size: 22px; font-weight: 800; opacity: 0.85; touch-action: manipulation; }
+#zoomctl #zFit { font-size: 12px; }
+#fx { position: absolute; inset: 0; pointer-events: none; z-index: 4; } /* above the Gamble panel, below the Workshop */
+/* the top of the board: the unit info pill, with toasts stacking under it (kept away from Summon and the burrow) */
+#topstack {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: min(94%, 440px); z-index: 3;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+#toasts { display: flex; flex-direction: column; gap: 4px; align-items: center; width: 100%; }
+.toast {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 3px 12px; font-size: 14px; font-weight: 700; text-align: center;
+  box-shadow: 0 2px 0 var(--line);
+}
+#hint {
+  position: absolute; left: 0; right: 0; bottom: 6px; padding: 0 14px;
+  text-align: center; font-size: 14px; color: var(--muted); pointer-events: none; min-height: 1.2em;
+}
+#info {
+  width: 100%; pointer-events: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  padding: 7px 10px 8px; font-size: 13px; line-height: 1.3; box-shadow: 0 2px 0 var(--line);
+}
+#info[hidden] { display: none; }
+#upg, #gam {
+  position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); width: min(94%, 440px); max-height: 72%;
+  overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  padding: 8px 10px; z-index: 4; box-shadow: 0 2px 0 var(--line); font-size: 13px; line-height: 1.3;
+}
+#upg[hidden], #gam[hidden] { display: none; }
+#upg .uhead, #gam .uhead { display: flex; align-items: center; gap: 8px; }
+#upg .uhead b, #gam .uhead b { font-size: 16px; }
+#upg .uhead button, #gam .uhead button { margin-left: auto; }
+#upg .urow, #gam .urow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#upg .txt, #gam .txt { flex: 1; min-width: 0; }
+#upg small, #gam small { display: block; color: var(--muted); }
+#upg .muted, #gam .muted { color: var(--muted); }
+#upg button, #gam button { min-height: 34px; padding: 4px 10px; font-size: 13px; flex-shrink: 0; }
+/* Upgrades and Gamble: the title centred (close × in the corner), then one button per choice with its details and
+   cost under the name. Upgrades: three on the first row, two wider ones on the second; Gamble: two wide ones */
+.uhead.mid { position: relative; justify-content: center; min-height: 28px; }
+.uhead.mid button { position: absolute; right: 0; top: 50%; transform: translateY(-50%); min-height: 28px !important; padding: 0 9px !important; font-size: 16px !important; }
+.ugrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 6px; }
+.ugrid button { grid-column: span 2; min-height: 62px !important; padding: 5px 4px !important; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.ugrid button.wide { grid-column: span 3; }
+.ugrid b { font-size: 14px; line-height: 1.1; }
+.ugrid small { font-size: 12px; line-height: 1.15; }
+.ugrid small.cost { color: var(--text); font-weight: 800; font-size: 13px; }
+#gam .note { margin-top: 6px; text-align: center; color: var(--muted); }
+#info .head { display: flex; align-items: baseline; gap: 6px; }
+#info .name { font-weight: 800; font-size: 15px; }
+#info .muted { color: var(--muted); }
+/* four fixed stat cells, so the pill keeps its shape from unit to unit */
+#info .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 5px; text-align: center; }
+#info .stats div { background: var(--bg); border-radius: 8px; padding: 2px 2px 3px; overflow: hidden; }
+#info .stats small { display: block; color: var(--muted); font-size: 11px; line-height: 1.1; }
+#info .stats b { font-size: 14px; font-weight: 800; white-space: nowrap; }
+#info .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+#info .tags button { min-height: 26px; padding: 1px 10px; font-size: 12px; border-radius: 999px; }
+#info .tags button.on { border-color: var(--primary); box-shadow: inset 0 0 0 1.5px var(--primary); }
+#info .tagtext { margin-top: 5px; color: var(--muted); }
+/* buttons float on the selected unit with no panel: Sell just above it, Merge (and Craft when ready) just below.
+   The gap between the rows is the unit itself, and lets taps through to it */
+#ubtns { position: absolute; z-index: 4; display: flex; flex-direction: column; align-items: center; white-space: nowrap; pointer-events: none; } /* above toasts */
+#ubtns[hidden] { display: none; }
+#ubtns .ut, #ubtns .ub { display: flex; gap: 6px; pointer-events: auto; }
+#ubtns button { min-height: 34px; padding: 4px 11px; font-size: 13px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3); }
+#ubtns button:disabled { opacity: 1; color: var(--muted); } /* solid, so nothing shows through it */
+/* main actions: Expand over Speed | Summon (large, square, centred) | Upgrades over Gamble; test buttons below.
+   Each side column is as tall as Summon */
+footer {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px 10px; align-items: center;
+  padding: 10px 12px; background: var(--surface); border-top: 1px solid var(--line);
+}
+#summon { width: 192px; height: 96px; padding: 6px; border-radius: 22px; font-size: 23px; font-weight: 800; box-shadow: 0 3px 0 rgba(0, 0, 0, 0.18); }
+#summon small { display: block; font-size: 15px; font-weight: 700; opacity: 0.8; }
+footer .side { display: flex; flex-direction: column; gap: 6px; align-self: stretch; }
+footer .side button { flex: 1; min-height: 0; padding: 4px 6px; }
+/* the echo: when the first node appears, two rings ripple out of Expand a few times (until the player taps it) */
+#expand { position: relative; }
+#expand.echo::before, #expand.echo::after { content: ""; position: absolute; inset: -2px; border: 3px solid var(--primary); border-radius: 14px; opacity: 0; pointer-events: none; animation: echo 1.1s ease-out 5; }
+#expand.echo::after { animation-delay: 0.3s; }
+@keyframes echo { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(1.3, 1.7); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { #expand.echo::before, #expand.echo::after { animation: none; } #expand.echo { border-color: var(--primary); } }
+#expand { flex: 3; } #speed { flex: 2; font-size: 13px; font-weight: 500; }
+#expand small { display: block; font-size: 13px; font-weight: 700; opacity: 0.8; }
+footer .small { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+button {
+  font: inherit; font-weight: 700; font-size: 15px; line-height: 1.15;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  border-radius: 12px; padding: 10px 8px; min-height: 48px; cursor: pointer;
+}
+button.primary { background: var(--primary); color: var(--primary-text); border-color: transparent; }
+button:disabled { opacity: 0.4; cursor: default; }
+button:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+footer .small button { min-height: 36px; padding: 4px 12px; font-size: 13px; font-weight: 500; }
+#modal {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(10, 16, 8, 0.45); padding: 16px; z-index: 4; /* above the info pill and toasts */
+}
+#shop { position: absolute; inset: 0; background: var(--bg); overflow-y: auto; padding: 14px 14px 24px; z-index: 5; }
+#shop[hidden] { display: none; }
+#shop h2 { margin: 0; font-size: 26px; font-weight: 800; }
+#shop h3 { margin: 18px 0 2px; font-size: 18px; font-weight: 800; }
+#shop .muted { color: var(--muted); font-weight: 500; }
+#shop .item { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; margin-top: 6px; }
+#shop .item .txt { flex: 1; min-width: 0; }
+#shop .item b { font-size: 15px; }
+#shop .item small { display: block; color: var(--muted); font-size: 13px; line-height: 1.25; }
+#shop .item button { min-height: 38px; padding: 4px 10px; font-size: 13px; flex-shrink: 0; }
+#shop .start { width: 100%; margin-top: 18px; }
+/* Workshop, Research and Artifacts stack under Play, each a little smaller than it */
+#menu .trio { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+#menu .trio button { width: 88%; min-height: 48px; font-size: 17px; }
+#menu .pair { display: flex; gap: 8px; } #menu .pair button { flex: 1; }
+#feedback { position: absolute; inset: 0; background: var(--bg); z-index: 8; display: flex; flex-direction: column; }
+#feedback[hidden] { display: none; }
+#feedback header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
+#fbBody { display: contents; } /* the iframe or the message fills the panel */
+#feedback h2 { margin: 0; font-size: 20px; font-weight: 800; }
+#feedback header a { color: var(--text); font-size: 13px; margin-left: auto; }
+#feedback iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+#feedback .empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--muted); font-size: 16px; }
+#menu {
+  position: absolute; inset: 0; z-index: 7; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: radial-gradient(ellipse at 50% 35%, var(--surface), var(--bg) 70%);
+}
+#menu[hidden] { display: none; }
+#menu .inner { width: min(100%, 360px); text-align: center; display: flex; flex-direction: column; gap: 12px; }
+#menu svg { width: 150px; height: auto; margin: 0 auto; overflow: visible; }
+#menu h1 { margin: 0; font-size: 40px; font-weight: 800; line-height: 1; letter-spacing: -0.5px; }
+#menu p { margin: 0; color: var(--muted); font-size: 16px; }
+#menu .meta { font-size: 14px; color: var(--muted); }
+#menu .meta b { color: var(--text); }
+#menu button { min-height: 56px; font-size: 19px; font-weight: 800; border-radius: 16px; }
+#menu button.secondary { min-height: 48px; font-size: 16px; font-weight: 700; }
+@keyframes crawl { 0%, 100% { transform: translateY(0) scaleX(1); } 50% { transform: translateY(-3px) scaleX(1.04); } }
+#menu .seg { animation: crawl 0.9s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+#menu .seg:nth-child(2) { animation-delay: -0.3s; } #menu .seg:nth-child(3) { animation-delay: -0.6s; }
+@media (prefers-reduced-motion: reduce) { #menu .seg { animation: none; } }
+#modal.open { display: flex; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 18px;
+  padding: 20px; width: min(100%, 380px); text-align: center;
+}
+.card h2 { margin: 0 0 6px; font-size: 28px; font-weight: 800; }
+.card p { margin: 0 0 16px; color: var(--muted); font-size: 16px; white-space: pre-line; }
+.card .actions { display: flex; gap: 10px; }
+.card .actions button { flex: 1; }
+.card .actions.stack { flex-direction: column; }
+.card .actions small { display: block; font-weight: 500; font-size: 13px; opacity: 0.8; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+<header>
+  <div class="hl"><div class="stat" id="wave"><b>Wave 1</b></div></div>
+  <div id="phase">Between waves</div>
+  <div class="hr"><div class="stat" id="loot"><b>0</b><span>loot</span></div></div>
+  <div class="hb">
+    <div class="stat" id="hp"><b>20</b><span>/ 20 HP</span></div>
+    <div class="stat" id="enemies"><b>0</b><span>enemies</span></div>
+  </div>
+</header>
+<main>
+  <canvas id="c" aria-label="Game board"></canvas>
+  <div id="topstack">
+    <div id="info" hidden></div>
+    <div id="toasts" aria-live="polite"></div>
+  </div>
+  <div id="zoomctl">
+    <button id="zIn" aria-label="Zoom in" title="Zoom in (or scroll, or pinch)">+</button>
+    <button id="zOut" aria-label="Zoom out" title="Zoom out">−</button>
+    <button id="zFit" aria-label="Fit the whole board" title="Fit the whole board">Fit</button>
+  </div>
+  <div id="ubtns" hidden></div>
+  <div id="hint"></div>
+  <div id="upg" hidden></div>
+  <div id="gam" hidden></div>
+  <div id="shop" hidden></div>
+  <div id="feedback" hidden>
+    <header><h2>Feedback</h2><a id="fbLink" href="#" target="_blank" rel="noopener" hidden>Open in new tab</a><button id="fbClose">Close</button></header>
+    <div id="fbBody"></div>
+  </div>
+  <div id="menu" hidden></div>
+  <div id="modal" role="dialog" aria-modal="true">
+    <div class="card">
+      <h2 id="mTitle"></h2>
+      <p id="mBody"></p>
+      <div class="actions" id="mActions"></div>
+    </div>
+  </div>
+</main>
+<footer>
+  <div id="purse">
+    <div class="stat" id="gold"><div class="clip" id="goldv"><b>70</b><span>gold</span></div></div>
+    <div class="stat" id="charms"><div class="clip" id="charmsv"><b>0</b><span>✦ charms</span></div></div>
+  </div>
+  <div class="side">
+    <button id="expand">Expand</button>
+    <button id="speed">Speed 1×</button>
+  </div>
+  <button class="primary" id="summon">Summon</button>
+  <div class="side">
+    <button id="upgBtn">Upgrades</button>
+    <button id="gamBtn">Gamble</button>
+  </div>
+  <div class="small">
+    <button id="soundBtn">Sound: on</button>
+    <button id="fbBtn">Feedback</button>
+    <button id="quitBtn">Quit</button>
+  </div>
+</footer>
+<canvas id="fx" aria-hidden="true"></canvas>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+// ---------------------------------------------------------------- config
+const CFG = {
+  startFieldWidth: 3, startFieldHeight: 5,
+  startGold: 70, summonBaseCost: 10, summonCostStep: 1, goldPerKill: 2, waveClearBonus: 10,
+  interestRate: 0.05, // gold held at wave end earns 5% interest, no cap
+  bankInterestBonus: 0.02, // each Bank adds 2 percentage points
+  startHp: 20,
+  // Two modes, picked on the start menu.
+  // Classic: the player starts each wave; laps cost health.
+  // Timed: waves arrive on a timer and only a boss pauses the game; an enemy limit replaces health.
+  waveDuration: 20, // game seconds from one wave's start to the next
+  prepTime: 8,      // game seconds before wave 1 arrives
+  // ENEMY LIMIT instead of health: going over the limit starts a countdown; still over when it ends, you lose.
+  enemyCap: 60,       // enemies allowed on the board
+  overCapTime: 12,    // game seconds you can stay over the limit
+  bossCapWeight: 1,   // a boss counts as this many enemies toward the limit (her timer is the real threat)
+  baseSpeed: 2, // game pace at 1×; the speed button multiplies this
+  hpGrowthPerWave: 0.15, // every enemy's HP grows this much per wave
+  // A wave is a list of entries: which unit, how many, and the delay (s) between each spawn.
+  baseWave: [{ unit: "Grub", count: 20, delay: 0.5 }],
+  bossEntry: { unit: "GrubMother", count: 1, delay: 0.5 },
+  // node rewards: a bigger enemy limit, more enemies every wave for more gold and loot, or more damage
+  nodeCapBonus: 10,
+  nodeEnemyReward: { unit: "Grub", count: 5, delay: 0.5 }, nodeEnemyLoot: 1, // loot per wave for each pick
+  nodeDamageBonus: 0.1, // the + damage reward adds this much damage for every unit, for the rest of the run
+  resumePrep: 5, // game seconds of countdown after continuing a saved run, before its wave starts
+  bossBreak: 5, // timed: game seconds of calm after a boss wave before the next wave starts (a flat 5s, however long the boss took)
+  bossTime: 90, // timed: game seconds to kill the Grub Mother once she's out, or the run is lost
+  bossEvery: 10, bossSpawnInterval: 5, bossSpawnCount: 0,
+  bossGold: 20,
+  feedbackUrl: "https://docs.google.com/forms/d/e/1FAIpQLSd_GbqIb8YMl_hx6PoSkhBVsQKMqBHNNhmiYOW-tPRQHaU2ww/viewform", // a Google Form link for the Feedback button (empty: the button shows a "not set up" note)
+  expandBaseCost: 30, expandCostStep: 10,
+  firstNodeAfterWave: 3, nodeEvery: 3, nodeDistance: 3, // nodes spawn this many expands away, straight out from the field
+  lootPerWave: 1, lootPerBoss: 10, deathKeepFraction: 0.3,
+    buildingRefundGold: 30, // paid instead of a building when the board has no free tile
+  sellValue: 5, sellMult: 3, // gold back per unit sold: Tier 1 pays sellValue, each tier above pays sellMult times the one below
+  tierScale: 3.5, // each tier multiplies a unit's damage by this; tiers have no cap
+};
+
+// ---------------------------------------------------------------- units
+// Every unit uses one template. attack.kind "projectile" flies to its target; "cone" is a stationary wedge; "melee" strikes
+// the one furthest enemy in reach; "pulse" strikes every enemy in reach at once.
+// Optional on projectiles: splash (blast radius in tiles), slow ({ amount 0-1, duration s }).
+// There are four unit types, all Tier 1 when summoned. A full stack of 3 of the same type and tier merges into one of that
+// type a tier higher, with no cap; each tier multiplies damage by CFG.tierScale. A new type = add it below (and to FAMILIES).
+// `tiers: { 2: {...} }` adds abilities from that tier up (stats() merges them in; `attack` keys merge into the unit's attack,
+// anything else, like `rapid`, is added to the unit).
+//
+// Abilities (skill, secondary, plank) can each carry an action setting that makes the unit act it out:
+//   { anim: "lunge" | "yank" | "recoil" | "carry" | "jump" | "dizzy" | "spin", busy: seconds it stops attacking,
+//     animTime: seconds the animation lasts (defaults to busy), prop: "plank" (something carried by "carry") }
+// Any unit can be stunned (busy, with the "dizzy" animation) through stunUnit().
+const FAMILIES = {
+  Archer:  { shape: "circle",   icon: "bow" },
+  Warrior: { shape: "square",   icon: "sword" },
+  Bomber:  { shape: "diamond",  icon: "bomb" },
+  Spirit:  { shape: "triangle", icon: "star" },
+};
+const shot = (speed, extra) => ({ kind: "projectile", speed, maxHits: 1, ...extra });
+const cone = (angle, maxHits) => ({ kind: "cone", angle, maxHits });
+const UNITS = {
+  // Tier 2: Rapid Fire, now and then it shoots 3x as fast for a couple of seconds
+  Archer:  { family: "Archer",  color: "#4f9fe8", dark: "#2f6fae", damage: 3, aps: 1.0, range: 3,    attack: shot(9),
+             tiers: { 2: { rapid: { every: 8, duration: 2, mult: 3 } } } },
+  // single-target melee. Tier 2: Sweep, a chance on each attack to swing at everything in a wide arc instead
+  Warrior: { family: "Warrior", color: "#f0a23b", dark: "#b06d12", damage: 6, aps: 0.8, range: 1.25, attack: { kind: "melee" },
+             tiers: { 2: { attack: { sweep: { chance: 0.25, angle: 120 } } } } },
+  // Tier 2: fire bombs, they set everything in the blast alight (burn dps grows with the tier like damage does)
+  Bomber:  { family: "Bomber",  color: "#d9604a", dark: "#9a3a26", damage: 4, aps: 0.5, range: 2.5,  attack: shot(6, { splash: 0.8 }),
+             tiers: { 2: { attack: { burn: { dps: 1.5, duration: 3 } } } } },
+  // melee area: every enemy within reach is hit at once. Tier 2: the pulse slows everything it hits
+  Spirit:  { family: "Spirit",  color: "#a07de8", dark: "#5f3fb0", damage: 3, aps: 0.8, range: 1.25, attack: { kind: "pulse" },
+             tiers: { 2: { attack: { slow: { amount: 0.35, duration: 1.5 } } } } },
+};
+// a stack's tier (summoned units are Tier 1; merging raises it); each tier above 1 multiplies damage by CFG.tierScale
+const BASE_UNITS = Object.keys(UNITS);
+const tierOf = t => t.tier || 1;
+const tierPower = tier => Math.pow(CFG.tierScale, tier - 1);
+const STACK_MAX = 3;
+const unitName = id => UNITS[id].name || id;
+// glow per tier: none for Tier 1, then cyan, gold, and a hue per tier beyond that
+const tierRim = tier => tier < 2 ? null : tier === 2 ? "#7ee3ff" : tier === 3 ? "#ffd34d" : `hsl(${(tier * 47) % 360} 90% 65%)`;
+
+// Buildings: rewards for claiming a node. They take a tile and can be dragged, but never attack or merge.
+// Camps ("spawns") send out one free Tier 1 unit of their family at the start of every wave. Free units don't
+// raise the summon cost, join a matching stack first, and need room on the board (no room, no unit).
+const BUILDINGS = {
+  ArcherCamp:  { label: "Archer Camp",  glyph: "A", color: "#4f9fe8", dark: "#2f6fae", spawns: "Archer",  desc: "Sends out a free Archer at the start of every wave." },
+  WarriorCamp: { label: "Warrior Camp", glyph: "W", color: "#f0a23b", dark: "#b06d12", spawns: "Warrior", desc: "Sends out a free Warrior at the start of every wave." },
+  BomberCamp:  { label: "Bomber Camp",  glyph: "B", color: "#d9604a", dark: "#9a3a26", spawns: "Bomber",  desc: "Sends out a free Bomber at the start of every wave." },
+  SpiritCamp:  { label: "Spirit Camp",  glyph: "S", color: "#a07de8", dark: "#5f3fb0", spawns: "Spirit",  desc: "Sends out a free Spirit at the start of every wave." },
+  Mine:    { label: "Mine",     glyph: "$", color: "#c9a227", dark: "#8a6d10", desc: "+8 gold at the end of every wave." },
+  Bank:    { label: "Bank",     glyph: "%", color: "#5a8fd6", dark: "#2f5f9e", desc: "Interest +2% (5% becomes 7% with one Bank)." },
+  WarDrum: { label: "War Drum", glyph: "!", color: "#c04a6a", dark: "#7f2440", desc: "+25% damage for towers on the 8 tiles around it." },
+};
+const BUILDING_TYPES = Object.keys(BUILDINGS);
+const familyWeight = fam => { let w = 1; for (const t of S.towers.values()) if (t.building && BUILDINGS[t.type].favors === fam) w += 1; return w; };
+const weightOf = list => list.reduce((a, id) => a + familyWeight(UNITS[id].family), 0);
+const oddsIn = (list, id) => familyWeight(UNITS[id].family) / weightOf(list);
+function rollFrom(list) {
+  let r = Math.random() * weightOf(list);
+  for (const id of list) if ((r -= familyWeight(UNITS[id].family)) < 0) return id;
+  return list[0];
+}
+
+const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const countBuildings = type => { let n = 0; for (const t of S.towers.values()) if (t.building && t.type === type) n++; return n; };
+const drumsNear = t => { let n = 0; for (const o of S.towers.values()) if (o.building && o.type === "WarDrum" && Math.max(Math.abs(o.x - t.x), Math.abs(o.y - t.y)) <= 1) n++; return n; };
+// a stack's damage: one unit's damage x units in the stack x nearby War Drums
+// ---------------------------------------------------------------- meta progression (between runs)
+// Banked loot buys permanent Workshop upgrades and Artifacts. Up to 3 Artifacts can be equipped at once.
+const META = (() => {
+  let m = {};
+  try { m = JSON.parse(localStorage.getItem("grubdef_meta") || "{}") || {}; } catch (_) {}
+  if (m.loot == null) { try { m.loot = parseInt(localStorage.getItem("grubdef_banked") || "0", 10) || 0; } catch (_) { m.loot = 0; } }
+  m.workshop = m.workshop || {}; m.artifacts = m.artifacts || {}; m.equipped = m.equipped || []; m.research = m.research || {};
+  if (m.workshop.StartGold) { m.research.StartGold = m.workshop.StartGold; delete m.workshop.StartGold; } // moved to Research
+  delete m.mode; // Timed is the only mode now; Classic stays in the code for the balance sim, which sets it itself
+  return m;
+})();
+function saveMeta() { try { localStorage.setItem("grubdef_meta", JSON.stringify(META)); } catch (_) {} }
+const ARTIFACT_SLOTS = 3;
+// The Workshop: permanent unit upgrades. None for now: units grow by merging, and per-tier or per-family tracks don't scale to uncapped tiers.
+const WORKSHOP = {};
+const ARTIFACTS = {
+  Strongbox:     { label: "Strongbox",      unlock: 25, max: 10, upCost: l => 10 * l, desc: l => `+${l}% interest` },
+  GildedShovel:  { label: "Gilded Shovel",  unlock: 25, max: 10, upCost: l => 10 * l, desc: l => `+${10 * l}% gold from kills` },
+  CourierPigeon: { label: "Courier Pigeon", unlock: 20, max: 10, upCost: l => 8 * l,  desc: l => `+${5 * l} gold every wave` },
+  GiantSlayer:   { label: "Giant Slayer",   unlock: 30, max: 10, upCost: l => 12 * l, desc: l => `+${15 * l}% damage to bosses` },
+  HeadStart:     { label: "Head Start",     unlock: 20, max: 5,  upCost: l => 15 * l, desc: l => `Start each run with ${l} free Tier 1 unit${l > 1 ? "s" : ""}` },
+  TreasureMap:   { label: "Treasure Map",   unlock: 40, max: 1,  upCost: () => 0,     desc: () => "Node rewards offer 4 choices instead of 3" },
+  WarChest:      { label: "War Chest",      unlock: 35, max: 10, upCost: l => 12 * l, desc: l => `+${l}% damage for every 100 gold held` },
+};
+const wl = id => META.workshop[id] || 0;                                        // workshop level
+// Research: permanent upgrades to everything else: game speed, economy and quality of life. `needs` must be bought first.
+const RESEARCH = {
+  Speed2:    { label: "2× Speed",          max: 1, cost: () => 15,          desc: () => "Unlocks 2× game speed" },
+  Speed3:    { label: "3× Speed",          max: 1, cost: () => 40,          desc: () => "Unlocks 3× game speed", needs: "Speed2" },
+  Interest:  { label: "Compound Interest", max: 5, cost: l => 15 + 10 * l, desc: l => `+${l}% interest at the end of each wave` },
+  StartGold: { label: "Bigger Purse",      max: 5, cost: l => 10 + 8 * l,  desc: l => `+${10 * l} starting gold` },
+  EnemyCap:  { label: "Elbow Room",        max: 5, cost: l => 12 + 8 * l,  desc: l => `+${5 * l} enemy limit` },
+  Scouts:    { label: "Scouts",            max: 3, cost: l => 8 + 6 * l,   desc: l => `+${3 * l}s before the first wave` },
+};
+const rl = id => META.research[id] || 0;                                        // research level
+const speeds = () => [1, ...(rl("Speed2") ? [2] : []), ...(rl("Speed3") ? [3] : [])]; // game speeds unlocked
+const al = id => META.equipped.includes(id) ? (META.artifacts[id] || 0) : 0; // artifact level, if equipped
+
+// a single unit's damage: base x War Drums x War Chest. Each unit in a stack attacks on its own.
+// ---------------------------------------------------------------- in-run upgrades
+// Bought with gold during a run; they reset each run. Units grow only by merging (no per-tier power tracks, since tiers are uncapped),
+// so these are luck odds only. Costs grow each level.
+const UPG_LUCK = 0.03;
+const UPGRADES = {
+  LuckySummon: { label: "Lucky Summon",   base: 50,  mult: 1.6, max: 20, desc: l => `${Math.round(UPG_LUCK * 100 * l)}% chance a summon arrives as Tier 2` },
+  LuckyMerge:  { label: "Lucky Merge",    base: 100, mult: 1.6, max: 20, desc: l => `${Math.round(UPG_LUCK * 100 * l)}% chance a merge skips a tier` },
+};
+const up = id => (S && S.upgrades && S.upgrades[id]) || 0;
+const upCost = id => Math.round(UPGRADES[id].base * Math.pow(UPGRADES[id].mult, up(id)));
+function buyUpgrade(id) {
+  const u = UPGRADES[id], c = upCost(id);
+  if (S.gold < c || (u.max && up(id) >= u.max)) return;
+  S.gold -= c; S.upgrades[id] = up(id) + 1; sfx("upgrade");
+  toast(`${u.label} Lv ${S.upgrades[id]}: ${u.desc(S.upgrades[id])}`);
+}
+// The upgrades panel: one button per upgrade, with its level and cost under the name (same layout as Gamble). Hovering shows what the
+// next level does; buying says it in a toast.
+function upgHTML(locked) {
+  let h = `<div class="uhead mid"><b>Upgrades</b><button data-close aria-label="Close">×</button></div><div class="ugrid">`;
+  Object.entries(UPGRADES).forEach(([id, u], i) => {
+    const l = up(id), c = upCost(id), maxed = u.max && l >= u.max;
+    h += `<button data-up="${id}" class="wide" title="${maxed ? u.desc(l) : `Next: ${u.desc(l + 1)}`}"`
+      + `${maxed || S.gold < c || locked ? " disabled" : ""}><b>${u.short || u.label}</b><small>Lv ${l}</small>`
+      + `<small class="cost">${maxed ? "Max" : `${c}g`}</small></button>`;
+  });
+  return h + `</div>`;
+}
+
+const boosted = t => {
+  const s = stats(t);
+  const m = (1 + 0.25 * drumsNear(t))
+    * (1 + 0.01 * al("WarChest") * Math.floor(S.gold / 100))
+    * (1 + S.damageBonus); // node reward: + damage
+  return m === 1 ? s : { ...s, damage: s.damage * m };
+};
+const interestRate = () => CFG.interestRate + CFG.bankInterestBonus * countBuildings("Bank") + 0.01 * al("Strongbox") + 0.01 * rl("Interest");
+const interestNow = () => Math.floor(S.gold * interestRate());
+// Enemy templates. hp is the wave-1 value; it grows by hpGrowthPerWave each wave.
+const ENEMIES = {
+  Grub:       { label: "Grub",        hp: 15,  speed: 1,   size: 0.36, fill: "#e7cfe0", edge: "#9b6f8e" },
+  Guard:      { label: "Guard",       hp: 15,  speed: 1,   size: 0.36, fill: "#ef6b5f", edge: "#9c2f28" },
+  // damageMult scales lap damage: the Grub Mother's second lap costs 10 HP, her third 20.
+  GrubMother: { label: "Grub Mother", hp: 225, speed: 0.5, size: 0.9,  fill: "#d24f9b", edge: "#7a1f55", boss: true, damageMult: 10 },
+};
+const enemyHp = (name, w) => ENEMIES[name].hp * Math.pow(1 + CFG.hpGrowthPerWave, Math.max(0, w - 1));
+// one unit's stats: damage (and burn damage) grows with its tier, and each tier up to its own adds its abilities (see UNITS)
+const statsCache = new Map();
+const stats = t => {
+  const u = UNITS[t.type], tier = tierOf(t), key = t.type + tier;
+  if (tier <= 1) return u;
+  if (statsCache.has(key)) return statsCache.get(key);
+  let s = { ...u, damage: u.damage * tierPower(tier) };
+  for (let k = 2; k <= tier; k++) { const a = u.tiers && u.tiers[k]; if (a) s = { ...s, ...a, attack: { ...s.attack, ...a.attack } }; }
+  if (s.attack.burn) s.attack = { ...s.attack, burn: { ...s.attack.burn, dps: s.attack.burn.dps * tierPower(tier) } };
+  statsCache.set(key, s);
+  return s;
+};
+
+const COLORS = {
+  tile: "#5f8046", tileEdge: "#4b6836", pathTile: "#8a6a45", path: "#c9a575", pathEdge: "#6f5333",
+  expand: "rgba(150, 230, 120, 0.38)", node: "#c2303d", nodeGlow: "rgba(194,48,61,0.25)",
+  grub: "#e7cfe0", grubEdge: "#9b6f8e", guard: "#ef6b5f", guardEdge: "#9c2f28",
+  boss: "#d24f9b", bossEdge: "#7a1f55",
+  archer: "#4f9fe8", archerDark: "#2f6fae", soldier: "#f0a23b", soldierDark: "#b06d12",
+  select: "#ffe066", hpBack: "rgba(0,0,0,0.55)", hp: "#7ee36a",
+};
+
+// ---------------------------------------------------------------- helpers
+const K = (x, y) => x + "," + y;
+const P = k => k.split(",").map(Number);
+const DIRS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+const sgn = v => (v > 0) - (v < 0);
+const cheb = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+const center = (x, y) => [x + 0.5, y + 0.5];
+
+// ---------------------------------------------------------------- sound
+// Every sound is synthesised with Web Audio (no files). A cue is a list of notes: f Hz (to = slide to a second pitch),
+// d seconds, v volume, type (a waveform, or "noise" for a filtered noise burst with cutoff fc), at = start delay.
+// gap = the least real time between plays of one cue, so busy moments don't turn to mush; jitter = random pitch spread.
+// With no audio support (or in the balance sim) sfx() does nothing. Mute is saved in META.mute.
+const SFX = {
+  master: 0.5, maxVoices: 24,
+  click:        { gap: 0.03, notes: [{ f: 900, to: 600, d: 0.04, v: 0.14, type: "square" }] },
+  no:           { gap: 0.25, notes: [{ f: 170, to: 120, d: 0.14, v: 0.2, type: "square" }] },
+  summon:       { notes: [{ f: 330, to: 700, d: 0.1, v: 0.35, type: "sine" }, { f: 880, d: 0.09, v: 0.2, at: 0.07, type: "triangle" }] },
+  lucky:        { notes: [784, 988, 1175, 1568].map((f, i) => ({ f, d: 0.14, v: 0.26, at: i * 0.07, type: "triangle" })) },
+  merge:        { notes: [392, 494, 587, 784].map((f, i) => ({ f, d: i === 3 ? 0.3 : 0.14, v: 0.3, at: i * 0.08, type: "triangle" })) },
+  luckyMerge:   { notes: [392, 494, 587, 784, 988, 1175, 1568].map((f, i) => ({ f, d: i === 6 ? 0.4 : 0.12, v: 0.3, at: i * 0.06, type: "triangle" })) },
+  sell:         { notes: [{ f: 988, d: 0.06, v: 0.18, type: "square" }, { f: 1319, d: 0.12, v: 0.18, at: 0.06, type: "square" }] },
+  gambleWin:    { notes: [523, 659, 784, 1047].map((f, i) => ({ f, d: i === 3 ? 0.35 : 0.14, v: 0.3, at: i * 0.08, type: "triangle" })) },
+  gambleMiss:   { notes: [{ f: 220, to: 110, d: 0.3, v: 0.22, type: "sawtooth" }] },
+  upgrade:      { notes: [440, 660, 880].map((f, i) => ({ f, d: i === 2 ? 0.2 : 0.09, v: 0.28, at: i * 0.07, type: "triangle" })) },
+  expand:       { notes: [{ f: 150, to: 55, d: 0.24, v: 0.5, type: "sine" }, { d: 0.16, v: 0.22, fc: 500, type: "noise" }] },
+  nodeAppear:   { notes: [0, 0.22, 0.44].map((at, i) => ({ f: 1175, d: 0.3, v: [0.3, 0.16, 0.08][i], at, type: "sine" })) }, // a ping with two fading echoes: the first node
+  nodeWake:     { notes: [{ f: 98, to: 90, d: 0.6, v: 0.2, type: "sawtooth" }, { f: 104, to: 94, d: 0.6, v: 0.2, type: "sawtooth" }] },
+  nodeClaim:    { notes: [523, 659, 784, 1047].map((f, i) => ({ f, d: i === 3 ? 0.4 : 0.12, v: 0.22, at: i * 0.1, type: "square" })) },
+  waveStart:    { notes: [{ f: 294, d: 0.12, v: 0.16, type: "square" }, { f: 392, d: 0.22, v: 0.16, at: 0.12, type: "square" }] },
+  waveEnd:      { notes: [{ f: 1047, d: 0.08, v: 0.2, type: "triangle" }, { f: 1319, d: 0.16, v: 0.2, at: 0.07, type: "triangle" }] },
+  warn:         { gap: 1.2, notes: [440, 330, 440, 330].map((f, i) => ({ f, d: 0.12, v: 0.2, at: i * 0.15, type: "square" })) },
+  bossSpawn:    { notes: [{ f: 87, to: 73, d: 1.1, v: 0.3, type: "sawtooth" }, { f: 131, to: 110, d: 1.1, v: 0.16, type: "sawtooth" }, { f: 55, d: 1.1, v: 0.4, type: "sine" }] },
+  bossDown:     { notes: [392, 523, 659, 784, 1047].map((f, i) => ({ f, d: i === 4 ? 0.6 : 0.14, v: 0.26, at: i * 0.11, type: "square" })) },
+  lose:         { notes: [330, 294, 262, 196].map((f, i) => ({ f, d: i === 3 ? 0.7 : 0.28, v: 0.22, at: i * 0.26, type: "sawtooth" })) },
+  kill:         { gap: 0.03, jitter: 0.25, notes: [{ f: 520, to: 220, d: 0.07, v: 0.09, type: "sine" }] },
+  // one cue per attack kind, played as a unit fires
+  shot_projectile: { gap: 0.05, jitter: 0.2, notes: [{ f: 800, to: 300, d: 0.05, v: 0.07, type: "triangle" }] },
+  shot_melee:      { gap: 0.05, jitter: 0.2, notes: [{ d: 0.06, v: 0.1, fc: 3000, type: "noise" }] },
+  shot_cone:       { gap: 0.06, jitter: 0.2, notes: [{ d: 0.1, v: 0.12, fc: 1800, type: "noise" }] },
+  shot_pulse:      { gap: 0.06, jitter: 0.2, notes: [{ f: 200, to: 80, d: 0.12, v: 0.16, type: "sine" }] },
+  shot_zone:       { gap: 0.15, jitter: 0.2, notes: [{ d: 0.22, v: 0.09, fc: 600, type: "noise" }] },
+};
+const ACtor = typeof AudioContext !== "undefined" ? AudioContext : typeof webkitAudioContext !== "undefined" ? webkitAudioContext : null;
+let AC = null, acOut = null, acNoise = null, voices = 0;
+const lastPlay = {};
+// Browsers only allow sound after a tap, so the first tap creates the audio engine (and later taps wake it if it was suspended).
+function audioStart() {
+  if (!ACtor) return;
+  try {
+    if (!AC) {
+      AC = new ACtor(); acOut = AC.createGain(); acOut.gain.value = SFX.master; acOut.connect(AC.destination);
+      acNoise = AC.createBuffer(1, AC.sampleRate, AC.sampleRate); // one second of white noise, reused by every noise cue
+      const d = acNoise.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    if (AC.state === "suspended") AC.resume();
+  } catch (_) { AC = null; }
+}
+function sfx(name) {
+  const c = SFX[name];
+  if (!AC || !c || META.mute || AC.state !== "running") return;
+  const now = AC.currentTime;
+  if (now - (lastPlay[name] ?? -9) < (c.gap || 0) || voices >= SFX.maxVoices) return;
+  lastPlay[name] = now;
+  const j = c.jitter ? 1 + (Math.random() - 0.5) * c.jitter : 1;
+  for (const n of c.notes) {
+    const t0 = now + (n.at || 0), g = AC.createGain(), src = n.type === "noise" ? AC.createBufferSource() : AC.createOscillator();
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(n.v, t0 + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t0 + n.d);
+    if (n.type === "noise") {
+      const f = AC.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = n.fc || 2000;
+      src.buffer = acNoise; src.connect(f); f.connect(g);
+    } else {
+      src.type = n.type; src.frequency.setValueAtTime(n.f * j, t0);
+      if (n.to) src.frequency.exponentialRampToValueAtTime(n.to * j, t0 + n.d);
+      src.connect(g);
+    }
+    g.connect(acOut); voices++;
+    src.onended = () => { voices--; };
+    src.start(t0); src.stop(t0 + n.d + 0.02);
+  }
+}
+if (ACtor) {
+  for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, audioStart, { passive: true });
+  // a tick on the menu, pop-up, shop and small buttons (the game buttons have their own cues)
+  document.addEventListener("click", ev => {
+    const b = ev.target.closest && ev.target.closest("button");
+    if (b && !b.disabled && (b.id === "speed" || b.closest("#menu, #modal, #feedback, #shop, footer .small"))) sfx("click");
+  });
+}
+
+// ---------------------------------------------------------------- loop path
+class LoopPath {
+  constructor(pts) {
+    this.points = pts; this.cum = []; let d = 0;
+    for (let i = 0; i < pts.length; i++) {
+      this.cum.push(d);
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      d += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    this.length = d;
+  }
+  at(dist) {
+    const n = this.points.length; if (!n || this.length <= 0) return [0, 0];
+    dist = ((dist % this.length) + this.length) % this.length;
+    for (let i = 0; i < n; i++) {
+      const s = this.cum[i], e = i + 1 < n ? this.cum[i + 1] : this.length;
+      if (dist <= e) {
+        const seg = e - s, t = seg > 1e-5 ? (dist - s) / seg : 0;
+        const a = this.points[i], b = this.points[(i + 1) % n];
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      }
+    }
+    return this.points[0].slice();
+  }
+  closest(p) {
+    let best = Infinity, bestDist = 0; const n = this.points.length;
+    for (let i = 0; i < n; i++) {
+      const a = this.points[i], b = this.points[(i + 1) % n];
+      const abx = b[0] - a[0], aby = b[1] - a[1], len2 = abx * abx + aby * aby;
+      const t = len2 > 1e-6 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2)) : 0;
+      const qx = a[0] + abx * t, qy = a[1] + aby * t, d2 = (p[0] - qx) ** 2 + (p[1] - qy) ** 2;
+      if (d2 < best) { best = d2; bestDist = this.cum[i] + Math.sqrt(len2) * t; }
+    }
+    return bestDist;
+  }
+}
+
+// ---------------------------------------------------------------- board
+class Board {
+  constructor(w, h) {
+    this.field = new Set(); this.nodes = new Map();
+    for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) this.field.add(K(x, y));
+    this.rebuild();
+  }
+  has(x, y) { return this.field.has(K(x, y)); }
+  // Tiles away from the field, counting diagonals. 1 = path tile.
+  dist(x, y) {
+    let d = Infinity;
+    for (const k of this.field) {
+      const [fx, fy] = P(k), c = Math.max(Math.abs(fx - x), Math.abs(fy - y));
+      if (c < d) { d = c; if (d === 0) break; }
+    }
+    return d;
+  }
+  ring(r) {
+    const { minX, minY, maxX, maxY } = this.bounds(), out = [];
+    for (let x = minX - r; x <= maxX + r; x++)
+      for (let y = minY - r; y <= maxY + r; y++)
+        if (this.dist(x, y) === r) out.push([x, y]);
+    return out;
+  }
+  isExpandable(x, y) {
+    if (this.has(x, y)) return false;
+    return DIRS.some(([dx, dy]) => this.has(x + dx, y + dy));
+  }
+  expandable() {
+    const s = new Set();
+    for (const k of this.field) {
+      const [x, y] = P(k);
+      for (const [dx, dy] of DIRS) if (!this.has(x + dx, y + dy)) s.add(K(x + dx, y + dy));
+    }
+    return [...s].map(P);
+  }
+  bounds() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const k of this.field) {
+      const [x, y] = P(k);
+      minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    }
+    return { minX, minY, maxX, maxY };
+  }
+  expand(x, y) {
+    const res = { claimed: null, engulfed: [], filled: [] };
+    const k = K(x, y);
+    this.field.add(k);
+    if (this.nodes.has(k)) { res.claimed = this.nodes.get(k); this.nodes.delete(k); }
+    this.fillEnclosed(res);
+    this.rebuild();
+    return res;
+  }
+  fillEnclosed(res) {
+    let { minX, minY, maxX, maxY } = this.bounds();
+    minX--; minY--; maxX++; maxY++;
+    const outside = new Set([K(minX, minY)]), q = [[minX, minY]];
+    while (q.length) {
+      const [cx, cy] = q.pop();
+      for (const [dx, dy] of DIRS) {
+        const nx = cx + dx, ny = cy + dy, nk = K(nx, ny);
+        if (nx < minX || nx > maxX || ny < minY || ny > maxY) continue;
+        if (this.field.has(nk) || outside.has(nk)) continue;
+        outside.add(nk); q.push([nx, ny]);
+      }
+    }
+    for (let x = minX; x <= maxX; x++) for (let y = minY; y <= maxY; y++) {
+      const k = K(x, y);
+      if (this.field.has(k) || outside.has(k)) continue;
+      this.field.add(k); res.filled.push([x, y]);
+      if (this.nodes.has(k)) { res.engulfed.push(this.nodes.get(k)); this.nodes.delete(k); }
+    }
+  }
+  rebuild() {
+    const next = new Map();
+    for (const k of this.field) {
+      const [x, y] = P(k);
+      if (!this.has(x, y - 1)) next.set(K(x, y), K(x + 1, y));
+      if (!this.has(x + 1, y)) next.set(K(x + 1, y), K(x + 1, y + 1));
+      if (!this.has(x, y + 1)) next.set(K(x + 1, y + 1), K(x, y + 1));
+      if (!this.has(x - 1, y)) next.set(K(x, y + 1), K(x, y));
+    }
+    let start = null;
+    for (const k of next.keys()) {
+      const [x, y] = P(k);
+      if (!start || y < start[1] || (y === start[1] && x < start[0])) start = [x, y];
+    }
+    const corners = []; let cur = K(start[0], start[1]); const sk = cur; let guard = next.size + 2;
+    do { corners.push(P(cur)); cur = next.get(cur); } while (cur && cur !== sk && --guard > 0);
+
+    const n = corners.length; let kept = [];
+    for (let i = 0; i < n; i++) {
+      const p = corners[(i - 1 + n) % n], c = corners[i], q = corners[(i + 1) % n];
+      if (sgn(c[0] - p[0]) !== sgn(q[0] - c[0]) || sgn(c[1] - p[1]) !== sgn(q[1] - c[1])) kept.push(c);
+    }
+    if (kept.length < 3) kept = corners;
+    const m = kept.length, pts = [];
+    for (let i = 0; i < m; i++) {
+      const p = kept[(i - 1 + m) % m], c = kept[i], q = kept[(i + 1) % m];
+      const di = [sgn(c[0] - p[0]), sgn(c[1] - p[1])], dout = [sgn(q[0] - c[0]), sgn(q[1] - c[1])];
+      pts.push([c[0] + 0.5 * (di[1] + dout[1]), c[1] + 0.5 * (-di[0] - dout[0])]);
+    }
+    this.path = new LoopPath(pts);
+  }
+  // Restart the loop at the point closest to `pos`, so the burrow (path distance 0) stays put when the path is
+  // rebuilt. If the burrow's spot was built over, it shifts to the nearest point of the new path (about 1 tile).
+  rebase(pos) {
+    const path = this.path, pts = path.points, n = pts.length, d = path.closest(pos);
+    let i = 0;
+    while (i < n - 1 && path.cum[i + 1] <= d) i++;
+    const start = path.at(d), out = [start];
+    for (let j = 1; j <= n; j++) {
+      const p = pts[(i + j) % n];
+      if (Math.hypot(p[0] - out[out.length - 1][0], p[1] - out[out.length - 1][1]) > 1e-6) out.push(p);
+    }
+    if (Math.hypot(out[out.length - 1][0] - start[0], out[out.length - 1][1] - start[1]) < 1e-6) out.pop();
+    this.path = new LoopPath(out);
+  }
+}
+
+// ---------------------------------------------------------------- state
+let S;
+function newGame() {
+  S = {
+    board: new Board(CFG.startFieldWidth, CFG.startFieldHeight),
+    phase: "build", wave: 1,
+    spawned: 0, spawnTimer: 0, graceTimer: 0, bossTimer: 0, bossSpawned: false, boss: null,
+    spawnList: [], pendingEntries: [], clock: 0,
+    hp: CFG.startHp, maxHp: CFG.startHp, hits: [],
+    gold: CFG.startGold + 10 * rl("StartGold"), summonCount: 0, expandCount: 0, expandMode: false, loot: 0, finalLoot: 0,
+    nextPackId: 0, packs: new Map(), pendingRewards: 0, waveExtras: [], enemyCap: CFG.enemyCap + 5 * rl("EnemyCap"), bossTime: CFG.bossTime, bossLeft: null, lootBonus: 0, damageBonus: 0, heldBuildings: [], upgrades: {}, charms: 0, pity: {},
+    enemies: [], towers: new Map(), selected: null,
+    drag: null, speed: 1, toasts: [], flashes: [], projectiles: [], coins: [], corpses: [], zones: [], planks: [], pings: [], flyers: [],
+    cashedOut: false, endReason: "", nodeHint: false,
+  };
+  S.burrow = S.board.path.at(0); // where enemies come out; it stays here as the board grows
+  for (let i = 0; i < al("HeadStart"); i++) addUnit(rollFrom(BASE_UNITS));
+  S.mode = META.mode === "classic" ? "classic" : "timed";
+  if (S.mode === "timed") { // the run is live from the start; wave 1 arrives after a short countdown
+    S.phase = "combat"; S.prep = S.prepFull = CFG.prepTime + 3 * rl("Scouts"); S.waveTime = 0; S.waveLive = false; // the burrow counts it down
+  } else toast("Summon towers, then start the wave.");
+  closeModal(); closeShop(); resetView();
+}
+const isBossWave = w => CFG.bossEvery > 0 && w % CFG.bossEvery === 0;
+// timed mode uses the enemy limit instead of health
+const limitMode = () => S && S.mode === "timed";
+// how full the board is against the enemy limit (a boss counts as several)
+const boardLoad = () => S.enemies.reduce((n, e) => n + (e.hp > 0 ? (e.isBoss ? CFG.bossCapWeight : 1) : 0), 0);
+// A wave's spawn list (the coming wave by default): base entries, then node entries, then the boss last.
+const nextWaveList = (w = S.wave) => [
+  ...CFG.baseWave.map(e => ({ ...e })),
+  ...S.waveExtras.map(e => ({ ...e })),
+  ...S.pendingEntries.map(e => ({ ...e })),
+  ...(isBossWave(w) ? [{ ...CFG.bossEntry }] : []),
+];
+// Timed: the countdown the burrow shows. While the Grub Mother is out, the time left to kill her (boss: true);
+// otherwise the seconds until the next wave, once the current one has finished coming out (or before wave 1).
+// null while enemies are still spawning, or on a boss wave before she's out.
+function nextWaveIn() {
+  if (S.mode !== "timed" || S.phase !== "combat") return null;
+  if (S.boss && S.bossLeft != null) return { left: S.bossLeft, full: S.bossTime, boss: true };
+  if (S.spawnList.length) return null;
+  if (!S.waveLive) return { left: S.prep, full: S.prepFull };
+  return isBossWave(S.wave) ? null : { left: Math.max(0, CFG.waveDuration - S.waveTime), full: CFG.waveDuration };
+}
+const countOf = list => list.reduce((n, e) => n + (e.left ?? e.count), 0);
+const remainingToSpawn = () => S.phase === "combat" ? countOf(S.spawnList) : countOf(nextWaveList());
+const describeList = list => {
+  const totals = {};
+  for (const e of list) totals[e.unit] = (totals[e.unit] || 0) + (e.left ?? e.count);
+  return Object.entries(totals).map(([u, n]) => `${n} ${ENEMIES[u].label}`).join(" + ");
+};
+const summonCost = () => CFG.summonBaseCost + CFG.summonCostStep * S.summonCount;
+const expandCost = () => CFG.expandBaseCost + CFG.expandCostStep * S.expandCount;
+
+function toast(text) {
+  S.toasts.push({ text, ttl: 3 });
+  if (S.toasts.length > 3) S.toasts.shift();
+}
+
+// ---------------------------------------------------------------- enemies
+function spawnEnemy(hp, speed, dist, size, kind, isBoss, packId) {
+  const e = { hp, maxHp: hp, speed, dist, traveled: 0, laps: 0, size, kind, isBoss, packId, spawnTimer: CFG.bossSpawnInterval };
+  e.pos = S.board.path.at(dist);
+  S.enemies.push(e);
+  return e;
+}
+function spawnUnit(name, dist, packId) {
+  const u = ENEMIES[name];
+  const e = spawnEnemy(enemyHp(name, S.wave) * enemyMods().hp, u.speed, dist, u.size, name, !!u.boss, packId);
+  if (u.boss) {
+    S.boss = e; S.bossSpawned = true; sfx("bossSpawn");
+    if (limitMode()) { S.bossLeft = S.bossTime; toast(`The ${u.label} emerges! Defeat her within ${S.bossTime}s.`); }
+    else toast(`The ${u.label} emerges!`);
+  }
+  return e;
+}
+
+// A lap is completed every time an enemy walks past the burrow. Being flung over it by a flip doesn't count,
+// being flipped back behind it doesn't undo a lap, and walking past it again counts again.
+// Each completed lap hurts more: lap 1 deals 0, lap 2 deals 1, lap 3 deals 2...
+function lapCheck(e, L) {
+  const idx = Math.floor(e.dist / L);
+  if (e.lapIdx === undefined) e.lapIdx = idx;
+  while (idx > e.lapIdx) {
+    e.lapIdx++; e.laps++;
+    const dmg = (e.laps - 1) * (ENEMIES[e.kind].damageMult || 1);
+    if (dmg > 0 && !limitMode()) { S.hp -= dmg; S.hits.push({ text: `-${dmg}`, pos: e.pos.slice(), ttl: 1 }); } // no lap damage with an enemy limit
+  }
+  if (idx < e.lapIdx) e.lapIdx = idx;
+}
+
+function moveEnemies(dt) {
+  const mods = enemyMods();
+  const path = S.board.path, extra = [];
+  for (const e of S.enemies) {
+    if (e.flight) { // flipped by Walk the Plank: flying across the board, not walking
+      const f = e.flight; f.t += dt;
+      const p = Math.min(1, f.t / f.dur);
+      e.pos = [f.from[0] + (f.to[0] - f.from[0]) * p, f.from[1] + (f.to[1] - f.from[1]) * p];
+      // landing: being flung over the burrow doesn't count as a lap; only walking past it does
+      if (p >= 1) { e.flight = null; e.pos = path.at(e.dist); e.lapIdx = Math.floor(e.dist / path.length); }
+      continue;
+    }
+    if (e.burnUntil && S.clock < e.burnUntil) hurt(e, e.burnDps * dt);
+    if (mods.regen && e.hp > 0) e.hp = Math.min(e.maxHp, e.hp + e.maxHp * mods.regen * dt); // Regeneration nodes
+    const slowed = e.slowUntil && S.clock < e.slowUntil;
+    const held = e.holdUntil && S.clock < e.holdUntil; // stunned or entangled: can't move
+    const step = held ? 0 : e.speed * mods.speed * (slowed ? 1 - e.slowAmt : 1) * dt; // node boosts speed them up
+    const prev = e.pos;
+    e.dist += step; e.traveled += step; e.pos = path.at(e.dist);
+    if (step > 0) { e.dir = Math.atan2(e.pos[1] - prev[1], e.pos[0] - prev[0]); e.walk = (e.walk || 0) + step * 7; }
+    lapCheck(e, path.length);
+    if (e.isBoss && e.hp > 0) {
+      e.spawnTimer -= dt;
+      if (e.spawnTimer <= 0) {
+        e.spawnTimer += CFG.bossSpawnInterval;
+        for (let i = 0; i < CFG.bossSpawnCount; i++) extra.push(e.dist - 0.45 * (i + 1));
+      }
+    }
+  }
+  for (const d of extra) spawnUnit("Grub", d, -1);
+}
+
+function cleanupDead() {
+  for (let i = S.enemies.length - 1; i >= 0; i--) {
+    const e = S.enemies[i];
+    if (e.hp > 0) continue;
+    let bounty = e.isBoss ? CFG.bossGold : CFG.goldPerKill;
+    if (!e.isBoss && al("GildedShovel")) { // fractional bonus gold carries over between kills
+      S.goldFrac = (S.goldFrac || 0) + CFG.goldPerKill * 0.1 * al("GildedShovel");
+      const extra = Math.floor(S.goldFrac); S.goldFrac -= extra; bounty += extra;
+    }
+    S.gold += bounty; sfx(e.isBoss ? "bossDown" : "kill");
+    dropCoins(bounty, e.pos);
+    // killed by a unit with itemChance (the Bandit): maybe drop an item (placeholder until items exist)
+    const killer = e.killedBy && UNITS[e.killedBy];
+    if (killer && killer.attack.itemChance && Math.random() < killer.attack.itemChance) dropItem(e.pos);
+    if (e.isBoss) { S.loot += CFG.lootPerBoss; S.charms += CHARMS.boss; toast(`Grub Mother defeated! +${CFG.lootPerBoss} loot, +${CHARMS.boss} ✦`); S.boss = null; S.bossLeft = null; }
+    // death animation: the body puffs up, bursts into bits and fades
+    S.corpses.push({ x: e.pos[0], y: e.pos[1], r: e.size / 2, kind: e.kind, dir: e.dir || 0, ttl: 0.45, max: 0.45 });
+    S.enemies.splice(i, 1);
+  }
+}
+
+// ---------------------------------------------------------------- towers
+function towersAttack(dt) {
+  for (const t of S.towers.values()) {
+    if (t.building) continue;
+    pulseAura(t, dt);
+    const def = UNITS[t.type], s = boosted(t), o = center(t.x, t.y), r2 = s.range * s.range;
+    let near = null; // enemies in reach, worked out only when a unit is ready
+    const targets = () => (near = (near || S.enemies.filter(e => (e.pos[0] - o[0]) ** 2 + (e.pos[1] - o[1]) ** 2 <= r2))
+      .filter(e => e.hp > 0).sort((a, b) => b.traveled - a.traveled)); // every unit targets the furthest enemy along the path
+    if (def.plank) usePlank(t, def.plank, o, dt);
+    if (def.spin) useSpin(t, def.spin, s, o, dt);
+    if (S.clock < (t.busyUntil || 0)) continue; // busy laying or pulling a plank, or stunned: no attacks at all
+    // every unit in the stack has its own attack timer; new units start out of step with the rest
+    t.cds = t.cds || [];
+    while (t.cds.length < t.count) t.cds.push(Math.random() / s.aps);
+    // ramp (Berserker): each attack in an unbroken run is faster; a pause resets it
+    if (def.ramp && S.clock - (t.lastAtk ?? -1e9) > def.ramp.reset) t.rampN = 0;
+    // rapid fire (Archer, Tier 2): when ready and an enemy is in reach, shoots faster for a short time
+    const rp = s.rapid;
+    if (rp && S.clock >= (t.rapidUntil || 0)) {
+      t.rapidCd = (t.rapidCd ?? rp.every * 0.5) - dt;
+      if (t.rapidCd <= 0 && targets().length) {
+        t.rapidUntil = S.clock + rp.duration; t.rapidCd = rp.every;
+        t.cds = t.cds.map(c => Math.min(c, 1 / (s.aps * rp.mult))); // the next shots come at the fast rate
+        S.flashes.push({ kind: "blast", o: o.slice(), range: 0.6, color: UNITS[t.type].color, ttl: 0.3, max: 0.3 });
+      }
+    }
+    const aps = s.aps * (def.ramp ? 1 + Math.min(def.ramp.max, def.ramp.per * (t.rampN || 0)) : 1) * (rp && S.clock < (t.rapidUntil || 0) ? rp.mult : 1);
+    for (let u = 0; u < t.count; u++) {
+      t.cds[u] -= dt;
+      if (t.cds[u] > 0) continue;
+      const list = targets();
+      if (!list.length) { t.cds[u] = 0; continue; }
+      t.aim = Math.atan2(list[0].pos[1] - o[1], list[0].pos[0] - o[0]);
+      ATTACKS[s.attack.kind](t, s, o, list, u); sfx("shot_" + s.attack.kind);
+      t.atkT = 1; t.lastAtk = S.clock; t.rampN = (t.rampN || 0) + 1;
+      t.cds[u] = 1 / aps;
+    }
+    if (def.skill) useSkill(t, def.skill, s, o, targets, dt);
+    if (def.secondary) useSecondary(t, def.secondary, s, o, dt);
+  }
+}
+
+// Secondary attacks (the Pirate's pistol): a second weapon with its own damage, range and timer per unit.
+// It gets the same boosts (War Drum, training, artifacts) as the main attack.
+function useSecondary(t, sec, s, o, dt) {
+  const ss = { ...sec, damage: sec.damage * (s.damage / stats(t).damage) }, r2 = sec.range * sec.range;
+  t.secCds = t.secCds || [];
+  while (t.secCds.length < t.count) t.secCds.push((0.3 + Math.random() * 0.7) / sec.aps);
+  for (let u = 0; u < t.count; u++) {
+    t.secCds[u] -= dt;
+    if (t.secCds[u] > 0) continue;
+    const list = S.enemies.filter(e => e.hp > 0 && (e.pos[0] - o[0]) ** 2 + (e.pos[1] - o[1]) ** 2 <= r2)
+      .sort((a, b) => b.traveled - a.traveled);
+    if (!list.length) { t.secCds[u] = 0; continue; }
+    t.aim = Math.atan2(list[0].pos[1] - o[1], list[0].pos[0] - o[0]);
+    ATTACKS[sec.attack.kind](t, ss, o, list, u);
+    t.atkT = 1; t.secCds[u] = 1 / sec.aps;
+    act(t, sec.act, list[0].pos);
+  }
+}
+
+// Skills (the Knight's shield bash): each unit in the stack uses its own on a timer.
+function useSkill(t, sk, s, o, targets, dt) {
+  t.skCds = t.skCds || [];
+  while (t.skCds.length < t.count) t.skCds.push(sk.every * (0.5 + Math.random() * 0.5));
+  for (let u = 0; u < t.count; u++) {
+    t.skCds[u] -= dt;
+    if (t.skCds[u] > 0) continue;
+    const list = targets();
+    if (!list.length) { t.skCds[u] = 0; continue; }
+    const e = list[0];
+    hurt(e, s.damage * sk.damageMult, t.type);
+    applyHold(e, sk.stun, "stun");
+    S.flashes.push({ kind: "blast", o: e.pos.slice(), range: 0.45, color: "#ffe066", ttl: 0.25, max: 0.25 });
+    t.atkT = 1; t.skCds[u] = sk.every;
+    act(t, sk.act, e.pos);
+  }
+}
+
+// Stuns and roots stop an enemy in place. Bosses shrug off half the duration.
+function applyHold(e, dur, kind) {
+  const d = dur * (e.isBoss ? 0.5 : 1), active = e.holdUntil && S.clock < e.holdUntil;
+  e.holdUntil = Math.max(active ? e.holdUntil : 0, S.clock + d);
+  e.holdKind = kind;
+}
+
+// ---------------------------------------------------------------- Walk the Plank (Gangplank)
+// Lays a plank on the path just ahead of the furthest enemy in range. The first non-boss enemy to step on it
+// is flipped straight across the board. If that line meets the path in more than one place, it picks the
+// landing spot that sets the enemy furthest back along its lap.
+// Lays a plank on a path tile straight next to the Gangplank (so it has to sit on the field's edge). The plank stays until
+// an enemy steps on it; a new one is laid 8s after that. If two path tiles touch the unit (a corner), it picks the one
+// further along the enemies' route.
+// ---------------------------------------------------------------- unit actions (generic)
+// act() plays an ability's animation and, if it has busy time, stops the unit attacking for that long.
+function act(t, cfg, at, extra) {
+  if (!cfg) return;
+  if (cfg.busy) t.busyUntil = Math.max(t.busyUntil || 0, S.clock + cfg.busy);
+  if (cfg.anim) t.anim = { kind: cfg.anim, start: S.clock, end: S.clock + (cfg.animTime || cfg.busy || 0.3),
+                           at: at || center(t.x, t.y), prop: cfg.prop, ...extra };
+}
+// stun any unit: it reels dizzy and does nothing for the duration
+function stunUnit(t, secs) { if (secs > 0) act(t, { anim: "dizzy", busy: secs }); }
+
+// Spin (Flame Spinner): on a timer, spins for a while hitting every enemy within the radius each tick.
+// The unit is busy (no other attacks) for the whole spin. Damage gets the same boosts as its main attack.
+function useSpin(t, sp, s, o, dt) {
+  if (t.spinUntil && S.clock < t.spinUntil) {
+    t.spinTick = (t.spinTick || 0) - dt;
+    if (t.spinTick > 0) return;
+    t.spinTick = sp.tick;
+    const dmg = sp.damage * (s.damage / stats(t).damage), r2 = sp.radius * sp.radius;
+    for (const e of S.enemies)
+      if (e.hp > 0 && (e.pos[0] - o[0]) ** 2 + (e.pos[1] - o[1]) ** 2 <= r2) { hurt(e, dmg, t.type); if (sp.burn) applyBurn(e, sp.burn); }
+    return;
+  }
+  if (S.clock < (t.busyUntil || 0)) return; // stunned or busy with something else
+  t.spinCd = (t.spinCd ?? sp.every * 0.5) - dt;
+  if (t.spinCd > 0) return;
+  const r2 = sp.radius * sp.radius;
+  if (!S.enemies.some(e => e.hp > 0 && (e.pos[0] - o[0]) ** 2 + (e.pos[1] - o[1]) ** 2 <= r2)) { t.spinCd = 0; return; }
+  t.spinUntil = S.clock + sp.duration; t.spinTick = 0; t.spinCd = sp.every;
+  act(t, { anim: sp.anim || "spin", busy: sp.duration }, o, { radius: sp.radius });
+}
+
+// Animations: given progress p (0-1) and the screen vector toward the action's target, how far to offset the unit.
+// carry also says where its prop is; dizzy adds stars.
+const ANIMS = {
+  lunge:  (p, vx, vy) => { const k = Math.sin(Math.PI * p) * 0.35; return { mx: vx * k, my: vy * k }; },
+  yank:   (p, vx, vy) => { const k = Math.sin(Math.PI * Math.min(1, p * 2)) * 0.22; return { mx: vx * k, my: vy * k }; },
+  recoil: (p, vx, vy) => { const k = -Math.sin(Math.PI * p) * 0.12; return { mx: vx * k, my: vy * k }; },
+  carry:  (p, vx, vy) => { const k = Math.sin(Math.PI * p) * 0.5; // walks out, sets the prop down halfway, walks back
+                           return { mx: vx * k, my: vy * k, propAt: p < 0.5 ? [vx * (k + 0.18), vy * (k + 0.18)] : [vx, vy] }; },
+  jump:   (p, vx, vy, s) => ({ mx: 0, my: -Math.sin(Math.PI * p) * s * 0.35 }),
+  dizzy:  (p, vx, vy, s) => ({ mx: Math.sin(time * 40) * s * 0.04, my: 0, stars: true }),
+  spin:   (p) => ({ mx: 0, my: 0, rot: p * Math.PI * 2 * 6, flames: true }), // whirls round with a ring of fire
+};
+const PROPS = {
+  plank(x, y, ang, s) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-(ang || 0) + Math.PI / 2);
+    ctx.fillStyle = "#8a5a2b"; ctx.strokeStyle = "#4f3214"; ctx.lineWidth = 2;
+    ctx.fillRect(-s * 0.3, -s * 0.08, s * 0.6, s * 0.16); ctx.strokeRect(-s * 0.3, -s * 0.08, s * 0.6, s * 0.16);
+    ctx.restore();
+  },
+};
+
+// ---------------------------------------------------------------- Walk the Plank (uses the plank settings on the unit)
+function usePlank(t, pk, o, dt) {
+  if (t.laying) { // the plank goes down when laying finishes (cancelled if the unit was moved meanwhile)
+    if (S.clock >= t.laying.done) {
+      if (K(t.x, t.y) === t.laying.key) S.planks.push({ ...t.laying.plank, owner: t, key: t.laying.key });
+      t.laying = null;
+    }
+    return;
+  }
+  if (S.clock < (t.busyUntil || 0)) return; // still pulling or stunned
+  t.plankCd = (t.plankCd ?? pk.every * 0.5) - dt;
+  if (t.plankCd > 0 || S.planks.some(p => p.owner === t)) return;
+  const path = S.board.path, L = path.length, spots = [];
+  for (const [dx, dy] of DIRS) { // straight neighbours only, not diagonals
+    const x = t.x + dx, y = t.y + dy;
+    if (!S.board.has(x, y) && S.board.dist(x, y) === 1) spots.push(path.closest([x + 0.5, y + 0.5]));
+  }
+  if (!spots.length) return; // not next to the path
+  // with two choices (a corner), take the one further along the enemies' route
+  const furtherAlong = (a, b) => ((a - b) % L + L) % L < L / 2;
+  const d = spots.reduce((best, x) => furtherAlong(x, best) ? x : best), pos = path.at(d), ahead = path.at(d + 0.05);
+  const plank = { pos, ang: Math.atan2(ahead[1] - pos[1], ahead[0] - pos[0]) }, lay = pk.lay || {};
+  t.laying = { plank, done: S.clock + (lay.busy || 0), key: K(t.x, t.y) };
+  act(t, lay, pos, { ang: plank.ang });
+}
+
+function tickPlanks() {
+  for (let i = S.planks.length - 1; i >= 0; i--) {
+    const p = S.planks[i];
+    // the plank goes if its Gangplank is moved, sold or merged
+    if (S.towers.get(p.key) !== p.owner || K(p.owner.x, p.owner.y) !== p.key) { S.planks.splice(i, 1); continue; }
+    const e = S.enemies.find(e => e.hp > 0 && !e.flight && (e.pos[0] - p.pos[0]) ** 2 + (e.pos[1] - p.pos[1]) ** 2 <= 0.35 * 0.35);
+    if (!e) continue;
+    S.planks.splice(i, 1);
+    const g = p.owner, pk = UNITS[g.type].plank;
+    g.plankCd = pk.every;
+    if (e.isBoss) { // too heavy to flip: the plank snaps, the boss walks on, the unit is stunned
+      stunUnit(g, (pk.heavy && pk.heavy.stun) || 0);
+      S.flashes.push({ kind: "blast", o: p.pos.slice(), range: 0.5, color: "#8a5a2b", ttl: 0.3, max: 0.3 });
+    } else {
+      flipAcross(e, p);
+      act(g, pk.pull, p.pos);
+    }
+  }
+}
+
+// where a ray from o in direction d crosses segment a-b, if it does
+function raySeg(o, d, a, b) {
+  const ex = b[0] - a[0], ey = b[1] - a[1], den = d[0] * ey - d[1] * ex;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((a[0] - o[0]) * ey - (a[1] - o[1]) * ex) / den, u = ((a[0] - o[0]) * d[1] - (a[1] - o[1]) * d[0]) / den;
+  return t < 0 || u < 0 || u > 1 ? null : { t, point: [o[0] + d[0] * t, o[1] + d[1] * t] };
+}
+
+function flipAcross(e, p) {
+  const path = S.board.path, pts = path.points, L = path.length;
+  // The enemy is flung over the Gangplank: along the line from the plank through the Gangplank's tile.
+  let nx, ny, past = 0.6;
+  const g = p.owner;
+  if (g) {
+    const gc = center(g.x, g.y), dx = gc[0] - p.pos[0], dy = gc[1] - p.pos[1], d = Math.hypot(dx, dy) || 1;
+    nx = dx / d; ny = dy / d; past = d;
+  } else { // no owner (shouldn't happen): straight into the field
+    nx = -Math.sin(p.ang); ny = Math.cos(p.ang);
+    const b = S.board.bounds(), cx = (b.minX + b.maxX + 1) / 2, cy = (b.minY + b.maxY + 1) / 2;
+    if (nx * (cx - p.pos[0]) + ny * (cy - p.pos[1]) < 0) { nx = -nx; ny = -ny; }
+  }
+  // It lands on the first stretch of path that line reaches beyond the Gangplank.
+  let best = null, bestT = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const hit = raySeg(p.pos, [nx, ny], pts[i], pts[(i + 1) % pts.length]);
+    if (!hit || hit.t <= past || hit.t >= bestT) continue;
+    bestT = hit.t; best = path.closest(hit.point);
+  }
+  if (best === null) return;
+  // Progress changes by however far round the loop that is (the shorter way), so a forward flip can skip ahead.
+  const back = ((e.dist - best) % L + L) % L, fwd = ((best - e.dist) % L + L) % L, bestMove = fwd < back ? fwd : -back;
+  const from = e.pos.slice();
+  // It doesn't teleport: it flies across (see moveEnemies).
+  e.dist += bestMove; e.traveled += bestMove;
+  e.flight = { from, to: path.at(e.dist), t: 0, dur: 0.8 };
+}
+
+// Between waves (and behind any menu) the world keeps ticking: shots in the air finish their flight, fire patches
+// burn out, and every unit's ability animation plays to its end, so towers settle back into their idle bob.
+// Nothing new is fired and no enemies move.
+function tickIdle(dt) {
+  S.clock += dt;
+  updateProjectiles(dt);
+  tickZones(dt);
+}
+
+// Fire patches (Pyromancer) burn everything standing in them.
+function tickZones(dt) {
+  for (let i = S.zones.length - 1; i >= 0; i--) {
+    const z = S.zones[i];
+    if (S.clock >= z.until) { S.zones.splice(i, 1); continue; }
+    for (const e of S.enemies)
+      if (e.hp > 0 && (e.pos[0] - z.pos[0]) ** 2 + (e.pos[1] - z.pos[1]) ** 2 <= z.r * z.r) hurt(e, z.dps * dt, z.src);
+  }
+}
+
+// Units with an aura pulse it on their own timer, whether or not they are attacking.
+function pulseAura(t, dt) {
+  const a = UNITS[t.type].aura;
+  if (!a) return;
+  t.auraCd = (t.auraCd || 0) - dt;
+  if (t.auraCd > 0) return;
+  t.auraCd = a.every;
+  const o = center(t.x, t.y), r2 = a.radius * a.radius;
+  let any = false;
+  for (const e of S.enemies)
+    if (e.hp > 0 && (e.pos[0] - o[0]) ** 2 + (e.pos[1] - o[1]) ** 2 <= r2) { applySlow(e, a.slow); any = true; }
+  if (any) S.flashes.push({ kind: "blast", o, range: a.radius, color: "#bfe6ff", ttl: 0.3, max: 0.3 });
+}
+
+// One function per attack kind; every unit template picks one.
+const ATTACKS = {
+  projectile(t, s, o, inRange, u) {
+    const a = s.attack, spread = ((u || 0) - ((t.count || 1) - 1) / 2) * 0.18; // shots leave from slightly different spots
+    const from = [o[0] - Math.sin(t.aim) * spread, o[1] + Math.cos(t.aim) * spread];
+    const base = { pos: from.slice(), damage: s.damage, speed: a.speed, color: UNITS[t.type].color, ang: t.aim,
+                   splash: a.splash || 0, slow: a.slow || null, gold: a.gold || 0, burn: a.burn || null, root: a.root || 0,
+                   freeze: a.freeze || 0, freezeMax: a.freezeMax || Infinity, explode: !!a.explode, ball: a.ball || null };
+    if (a.pierce) {
+      // fired at the furthest enemy, then keeps going in a straight line
+      S.projectiles.push({ ...base, dir: [Math.cos(t.aim), Math.sin(t.aim)], travel: a.travel, hitRadius: a.hitRadius, hitSet: new Set(), big: true });
+      return;
+    }
+    for (const e of inRange.slice(0, a.maxHits || 1)) S.projectiles.push({ ...base, pos: from.slice(), target: e });
+  },
+  // a fire patch on the path under the furthest enemy
+  zone(t, s, o, inRange) {
+    const a = s.attack, e = inRange[0];
+    S.zones.push({ pos: e.pos.slice(), r: a.radius, dps: s.damage, until: S.clock + a.duration, dur: a.duration, src: t.type });
+  },
+  // single-target melee: strikes only the furthest enemy within reach
+  melee(t, s, o, inRange) {
+    const sw = s.attack.sweep; // Sweep: now and then the strike becomes a swing at everything in an arc
+    if (sw && Math.random() < sw.chance) return ATTACKS.cone(t, { ...s, attack: { kind: "cone", angle: sw.angle } }, o, inRange);
+    const e = inRange[0];
+    hurt(e, s.damage, t.type);
+    if (s.attack.gold && Math.random() < (s.attack.goldChance ?? 1)) stealGold(s.attack.gold, e.pos);
+    S.flashes.push({ kind: "slash", o: e.pos.slice(), ang: t.aim + (Math.random() - 0.5) * 0.8, color: UNITS[t.type].color, ttl: 0.15, max: 0.15 });
+  },
+  // melee area: strikes every enemy within reach at once
+  pulse(t, s, o, inRange) {
+    for (const e of inRange) { hurt(e, s.damage, t.type); if (s.attack.slow) applySlow(e, s.attack.slow); }
+    S.flashes.push({ kind: "blast", o: o.slice(), range: s.range, color: UNITS[t.type].color, ttl: 0.2, max: 0.2 });
+  },
+  cone(t, s, o, inRange) {
+    const half = (s.attack.angle * Math.PI / 180) / 2;
+    const hits = inRange.filter(e => {
+      let d = Math.atan2(e.pos[1] - o[1], e.pos[0] - o[0]) - t.aim;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      return Math.abs(d) <= half;
+    }).slice(0, s.attack.maxHits || Infinity);
+    for (const e of hits) hurt(e, s.damage);
+    if (s.attack.gold && hits.length) stealGold(s.attack.gold * hits.length, hits[0].pos);
+    S.flashes.push({ o, ang: t.aim, half, range: s.range, color: UNITS[t.type].color, ttl: 0.15, max: 0.15 });
+  },
+};
+
+// all damage goes through here so artifacts like Giant Slayer can adjust it
+function hurt(e, d, src) {
+  e.hp -= e.isBoss ? d * (1 + 0.15 * al("GiantSlayer")) : d;
+  if (e.hp <= 0 && !e.killedBy && src) e.killedBy = src; // remember who landed the killing blow
+}
+
+// PLACEHOLDER: items are not designed yet. A drop shows a gem and is counted for the run.
+function dropItem(pos) {
+  S.itemsFound = (S.itemsFound || 0) + 1;
+  S.coins.push({ x: pos[0], y: pos[1], vx: 0, vz: 2.6, z: 0, ttl: 1.4, max: 1.4, item: true });
+  toast(`Item drop! (${S.itemsFound} this run · items coming soon)`);
+}
+
+// gold stolen by Thief-style hits, with a gold popup
+function stealGold(g, pos) {
+  S.gold += g;
+  dropCoins(g, pos);
+}
+
+// Gold feedback: coins pop out, bounce once and fade. One coin per gold, up to 6.
+function dropCoins(n, pos) {
+  for (let i = 0; i < Math.min(n, 6); i++)
+    S.coins.push({ x: pos[0], y: pos[1], vx: (Math.random() - 0.5) * 1.4, vz: 2.2 + Math.random() * 0.8, z: 0, ttl: 0.9, max: 0.9 });
+}
+
+function updateProjectiles(dt) {
+  for (let i = S.projectiles.length - 1; i >= 0; i--) {
+    const p = S.projectiles[i];
+    if (p.dir) { // piercing straight shot
+      const step = p.speed * dt;
+      p.pos[0] += p.dir[0] * step; p.pos[1] += p.dir[1] * step; p.travel -= step;
+      p.ang = Math.atan2(p.dir[1], p.dir[0]);
+      const r2 = p.hitRadius * p.hitRadius;
+      for (const e of S.enemies)
+        if (e.hp > 0 && !p.hitSet.has(e) && (e.pos[0] - p.pos[0]) ** 2 + (e.pos[1] - p.pos[1]) ** 2 <= r2) {
+          p.hitSet.add(e); impact(p, e);
+          if (p.explode) { p.travel = 0; break; } // bursts on the first enemy instead of passing through
+        }
+      if (p.travel <= 0) S.projectiles.splice(i, 1);
+      continue;
+    }
+    const e = p.target;
+    if (e.hp <= 0 || !S.enemies.includes(e)) { S.projectiles.splice(i, 1); continue; }
+    const dx = e.pos[0] - p.pos[0], dy = e.pos[1] - p.pos[1], d = Math.hypot(dx, dy), step = p.speed * dt;
+    p.ang = Math.atan2(dy, dx);
+    if (d <= step) { impact(p, e); S.projectiles.splice(i, 1); continue; }
+    p.pos[0] += dx / d * step; p.pos[1] += dy / d * step;
+  }
+}
+
+// A projectile landing: damage the target, plus everything in the blast, plus any slow.
+function impact(p, e) {
+  const hit = [e];
+  if (p.splash > 0) {
+    const r2 = p.splash * p.splash;
+    for (const o of S.enemies)
+      if (o !== e && o.hp > 0 && (o.pos[0] - e.pos[0]) ** 2 + (o.pos[1] - e.pos[1]) ** 2 <= r2) hit.push(o);
+    S.flashes.push({ kind: "blast", o: e.pos.slice(), range: p.splash, color: p.color, ttl: 0.2, max: 0.2 });
+  }
+  let frozen = 0; // a blast freezes at most freezeMax enemies (all of them still take damage)
+  for (const o of hit) {
+    hurt(o, p.damage);
+    if (p.gold) stealGold(p.gold, o.pos);
+    if (p.slow) applySlow(o, p.slow);
+    if (p.burn) applyBurn(o, p.burn);
+    if (p.root && o === e) applyHold(o, p.root, "root");
+    if (p.freeze && frozen < p.freezeMax) { applyHold(o, p.freeze, "freeze"); frozen++; }
+  }
+}
+
+// Burning enemies take damage every second for the duration; a stronger burn replaces a weaker one.
+function applyBurn(e, burn) {
+  const active = e.burnUntil && S.clock < e.burnUntil;
+  if (!active || burn.dps >= e.burnDps) e.burnDps = burn.dps;
+  e.burnUntil = Math.max(active ? e.burnUntil : 0, S.clock + burn.duration);
+}
+
+function applySlow(e, slow) {
+  const active = e.slowUntil && S.clock < e.slowUntil;
+  if (!active || slow.amount >= e.slowAmt) e.slowAmt = slow.amount;
+  e.slowUntil = Math.max(active ? e.slowUntil : 0, S.clock + slow.duration);
+}
+
+// A tile holds one stack: a single unit type at a single tier, up to 3.
+function addUnit(type, preferKey, tier = 1) {
+  let k = null;
+  for (const [key, t] of S.towers) if (!t.building && t.type === type && tierOf(t) === tier && t.count < STACK_MAX) { k = key; break; }
+  if (!k && preferKey && S.board.field.has(preferKey) && !S.towers.has(preferKey)) k = preferKey;
+  if (!k) {
+    const empty = [...S.board.field].filter(key => !S.towers.has(key));
+    if (empty.length) k = empty[Math.floor(Math.random() * empty.length)];
+  }
+  if (!k) return null;
+  const t = S.towers.get(k);
+  if (t) { t.count++; t.pop = 1; }
+  else { const [x, y] = P(k); S.towers.set(k, { type, tier, count: 1, x, y, cooldown: 0, pop: 1 }); }
+  pingUnit(k, type);
+  return k;
+}
+
+// A new unit arriving (summoned, spawned by a camp, gambled or merged) gets rings pulsing out from it.
+function pingUnit(k, type) {
+  S.pings = S.pings.filter(p => p.key !== k);
+  S.pings.push({ key: k, color: UNITS[type].color, born: time });
+}
+
+// The free tile nearest a point (ties at random). Summons and gambles use the burrow, so new units meet enemies
+// as they come out; camp units use the camp. A unit that stacks onto an existing tile still goes to that tile.
+function nearestFree(pt) {
+  let best = null, bd = Infinity;
+  for (const k of S.board.field) if (!S.towers.has(k)) {
+    const [x, y] = P(k), d = Math.hypot(x + 0.5 - pt[0], y + 0.5 - pt[1]) + Math.random() * 0.01;
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+
+// Same-type, same-tier units always share a stack: units from other part-filled stacks of this type and tier move onto
+// tile k (up to 3), each flying over. Used where a stack can be left split by a sale.
+function stackUp(k) {
+  const t = S.towers.get(k);
+  if (!t || t.building) return;
+  for (const [ok, o] of [...S.towers]) {
+    if (t.count >= STACK_MAX) break;
+    if (ok === k || o.building || o.type !== t.type || tierOf(o) !== tierOf(t) || o.count >= STACK_MAX) continue;
+    const n = Math.min(o.count, STACK_MAX - t.count);
+    t.count += n; o.count -= n;
+    if (o.count <= 0) { S.towers.delete(ok); if (S.selected === ok) S.selected = null; }
+    launchUnit(k, t.type, center(o.x, o.y));
+  }
+}
+
+function summon() {
+  const cost = summonCost();
+  if (![...S.board.field].some(k => !S.towers.has(k))) { toast("No free tile: merge, sell or expand."); sfx("no"); return; }
+  if (S.gold < cost) { toast("Not enough gold."); sfx("no"); return; }
+  S.gold -= cost; S.summonCount++;
+  const lucky = Math.random() < UPG_LUCK * up("LuckySummon");
+  sfx(lucky ? "lucky" : "summon");
+  const type = rollFrom(BASE_UNITS), k = addUnit(type, nearestFree(S.burrow), lucky ? 2 : 1);
+  if (k) launchUnit(k, type, els.summon);
+  if (lucky) toast("Lucky summon: a Tier 2 unit!");
+}
+
+// A reward building pops out of the node it came from and lands on the node's own tile (now part of the field).
+// If something is standing there, that walks to the nearest free tile instead; with no free tile at all, the
+// building is paid out as gold.
+function placeHeldBuildings() {
+  while (S.heldBuildings.length) {
+    const { type, from = S.burrow } = S.heldBuildings.shift(), spot = K(Math.floor(from[0]), Math.floor(from[1]));
+    let k = S.board.field.has(spot) ? spot : nearestFree(from);
+    if (k && S.towers.has(k)) {
+      const free = nearestFree(from), o = S.towers.get(k);
+      if (free) { S.towers.delete(k); [o.x, o.y] = P(free); S.towers.set(free, o); if (S.selected === k) S.selected = null; }
+      else k = null;
+    }
+    if (!k) {
+      S.gold += CFG.buildingRefundGold;
+      toast(`No free tile for your ${BUILDINGS[type].label}: +${CFG.buildingRefundGold} gold instead.`);
+      continue;
+    }
+    const [x, y] = P(k);
+    S.towers.set(k, { building: true, type, level: 1, x, y, pop: 1 });
+    launchUnit(k, type, from);
+  }
+}
+
+function canMerge(t) { return !!t && !t.building && t.count >= STACK_MAX; }
+
+// 3 of a type and tier become one of that type a tier higher (two higher on a lucky merge). The new unit flies into a
+// part-filled stack of its type and tier if there is one, else stays on the merged tile.
+function merge() {
+  const t = S.selected && S.towers.get(S.selected);
+  if (!canMerge(t)) return;
+  const k = K(t.x, t.y), skip = Math.random() < UPG_LUCK * up("LuckyMerge"), tier = tierOf(t) + (skip ? 2 : 1);
+  S.towers.delete(k); sfx(skip ? "luckyMerge" : "merge");
+  S.selected = addUnit(t.type, k, tier);
+  if (S.selected && S.selected !== k) launchUnit(S.selected, t.type, center(t.x, t.y));
+  toast(skip ? `Lucky merge! 3 ${unitName(t.type)}s skipped a tier and became a Tier ${tier} ${unitName(t.type)}!` : `3 ${unitName(t.type)}s became a Tier ${tier} ${unitName(t.type)}!`);
+  placeHeldBuildings();
+}
+
+const sellValue = t => Math.round(CFG.sellValue * Math.pow(CFG.sellMult, tierOf(t) - 1));
+
+// selling removes one unit from the stack
+function sell() {
+  const t = S.selected && S.towers.get(S.selected);
+  if (!t || t.building) return;
+  const g = sellValue(t), ch = sellCharms(t);
+  S.gold += g; S.charms += ch; sfx("sell");
+  if (t.count > 1) { t.count--; stackUp(S.selected); } else { S.towers.delete(S.selected); S.selected = null; }
+  toast(`Sold a ${unitName(t.type)} for ${g} gold${ch ? ` and ${ch} ✦` : ""}.`);
+}
+
+// ---------------------------------------------------------------- charms and gambling (this run only)
+// Charms come from bosses, claimed nodes, every 5th wave, and selling Tier 2+ units. They're spent on gambles
+// for higher-tier units. A miss builds pity: +10% on the next try of the same gamble, reset on a win.
+const CHARMS = { boss: 5, node: 2, everyWaves: 5, sell: 1, sellMult: 3 }; // selling pays `sell` at Tier 2, times `sellMult` for each tier above
+const sellCharms = t => tierOf(t) >= 2 ? CHARMS.sell * Math.pow(CHARMS.sellMult, tierOf(t) - 2) : 0;
+const GAMBLES = {
+  rare:   { label: "Tier 2", cost: 1, tier: 2, chance: 0.6 },
+  epic:   { label: "Tier 3", cost: 3, tier: 3, chance: 0.3 },
+};
+const gambleChance = id => Math.min(1, GAMBLES[id].chance + 0.1 * (S.pity[id] || 0));
+// A won unit flies out of the button that was pressed and lands like a summon, nearest the burrow.
+function gamble(id, from) {
+  const g = GAMBLES[id];
+  if (S.charms < g.cost) return;
+  if (![...S.board.field].some(k => !S.towers.has(k))) { toast("No free tile: sell or expand first."); sfx("no"); return; }
+  S.charms -= g.cost;
+  if (Math.random() < gambleChance(id)) {
+    S.pity[id] = 0; sfx("gambleWin");
+    const type = rollFrom(BASE_UNITS), k = addUnit(type, nearestFree(S.burrow), g.tier);
+    if (k) launchUnit(k, type, from || els.gamBtn);
+    toast(`${g.label} roll: you got a Tier ${g.tier} ${unitName(type)}!`);
+  } else {
+    S.pity[id] = (S.pity[id] || 0) + 1; sfx("gambleMiss");
+    toast(`${g.label} roll missed. Next try: ${Math.round(gambleChance(id) * 100)}%.`);
+  }
+}
+// The gamble panel: a Tier 2 and a Tier 3 roll, each with its chance (including the pity bonus) and cost under the name.
+function gamHTML(locked) {
+  const noRoom = ![...S.board.field].some(k => !S.towers.has(k));
+  let h = `<div class="uhead mid"><b>Gamble</b><button data-close aria-label="Close">×</button></div><div class="ugrid">`;
+  for (const [id, g] of Object.entries(GAMBLES))
+    h += `<button data-gamble="${id}" class="wide" title="${Math.round(gambleChance(id) * 100)}% chance of a random Tier ${g.tier} unit"`
+      + `${S.charms < g.cost || noRoom || locked ? " disabled" : ""}><b>${g.label}</b><small>${Math.round(gambleChance(id) * 100)}%</small>`
+      + `<small class="cost">${g.cost} ✦</small></button>`;
+  return h + `</div>` + (noRoom ? `<div class="note">Needs a free tile.</div>` : "");
+}
+
+function moveTower(fromK, x, y) {
+  const toK = K(x, y), a = S.towers.get(fromK);
+  S.towers.delete(fromK);
+  const b = S.towers.get(toK);
+  if (b) { const [fx, fy] = P(fromK); b.x = fx; b.y = fy; S.towers.set(fromK, b); }
+  a.x = x; a.y = y; S.towers.set(toK, a);
+  S.selected = null; // a move doesn't open the unit's menu (and any selection's tile may now hold another unit)
+}
+
+// ---------------------------------------------------------------- expansion & nodes
+function buyExpansion(x, y) {
+  // classic: between waves only; timed: any time, as long as the tile is clear
+  if (S.phase !== "build" && !(S.mode === "timed" && S.phase === "combat")) { S.expandMode = false; return; }
+  // the tile you build on must be clear of enemies
+  if (S.enemies.some(e => e.hp > 0 && Math.floor(e.pos[0]) === x && Math.floor(e.pos[1]) === y)) { toast("Enemies are on that tile: wait for it to clear."); sfx("no"); return; }
+  if (!S.board.isExpandable(x, y)) return;
+  const cost = expandCost();
+  if (S.gold < cost) { toast("Not enough gold to expand."); sfx("no"); S.expandMode = false; return; }
+  S.gold -= cost; S.expandCount++; S.expandMode = false; sfx("expand");
+  const res = S.board.expand(x, y);
+  S.board.rebase(S.burrow); S.burrow = S.board.path.at(0); // keep the burrow where it was
+  for (const n of res.engulfed) claimNode(n);
+  if (res.claimed) claimNode(res.claimed);
+  // re-seat enemies on the new loop, keeping which lap they're on
+  const L2 = S.board.path.length;
+  for (const e of S.enemies) {
+    const src = e.flight ? e.flight.to : e.pos;
+    e.dist = (e.lapIdx || 0) * L2 + S.board.path.closest(src);
+    if (e.flight) e.flight.to = S.board.path.at(e.dist); else e.pos = S.board.path.at(e.dist);
+  }
+  updateNodes();
+  S.planks = []; // the path moved; Gangplanks lay new planks
+  placeHeldBuildings();
+  if (S.pendingRewards > 0) { const back = S.phase; S.phase = "choosing"; offerReward(() => { S.phase = back; closeModal(); }); }
+}
+
+// Nodes sleep until the path is next to them. Once awake they buff every enemy until you expand onto them, which
+// ends the buff and pays the reward.
+function updateNodes() {
+  for (const n of S.board.nodes.values())
+    if (!n.active && S.board.dist(n.x, n.y) <= 2) activateNode(n);
+}
+
+// Node levels: each has an enemy buff that's active while it's awake. From wave 30, each node spawn also brings a
+// level 2 node, and from wave 60 a level 3 node too, with stronger buffs.
+const NODE_LEVEL_WAVES = [0, 0, 30, 60]; // the wave after which nodes of each level start spawning
+const NODE_EFFECTS = {
+  tough: { level: 1, label: "Toughness",    glyph: "♥", desc: "enemies spawn with 15% more health",         hp: 0.15 },
+  swift: { level: 1, label: "Swiftness",    glyph: "›", desc: "enemies move 10% faster",                    speed: 0.1 },
+  haste: { level: 2, label: "Haste",        glyph: "»", desc: "enemies move 20% faster",                  speed: 0.2 },
+  regen: { level: 2, label: "Regeneration", glyph: "+", desc: "enemies heal 2% of their health per second", regen: 0.02 },
+  dread: { level: 3, label: "Dread",        glyph: "!", desc: "enemies spawn with 30% more health and move 15% faster", hp: 0.3, speed: 0.15 },
+};
+const NODE_COLORS = [null, "#c2303d", "#7b3fd1", "#2b1a2e"];
+// the combined buff from every awake node
+function enemyMods() {
+  const m = { speed: 1, regen: 0, hp: 1 };
+  for (const n of S.board.nodes.values()) {
+    if (!n.active || !n.effect) continue;
+    const f = NODE_EFFECTS[n.effect];
+    m.speed += f.speed || 0; m.regen += f.regen || 0; m.hp += f.hp || 0;
+  }
+  return m;
+}
+
+function activateNode(n) {
+  n.active = true; sfx("nodeWake");
+  const f = NODE_EFFECTS[n.effect];
+  toast(`A node woke up! ${f.label}: ${f.desc} until you expand onto it.`);
+}
+
+function claimNode(n) {
+  S.board.nodes.delete(K(n.x, n.y));
+  S.pendingRewards++;
+  S.charms += CHARMS.node; sfx("nodeClaim");
+  toast(`Node claimed! +${CHARMS.node} ✦. Choose your reward.`);
+}
+
+function spawnNode(level = 1) {
+  const effects = Object.keys(NODE_EFFECTS).filter(k => NODE_EFFECTS[k].level === level);
+  const effect = effects.length ? effects[Math.floor(Math.random() * effects.length)] : null;
+  const b = S.board;
+  // a free spot straight out from a field tile (up, down, left or right; never a diagonal corner), so it always
+  // takes exactly nodeDistance expands to reach; ignored nodes slowly ring the map
+  const d = CFG.nodeDistance;
+  const cands = b.ring(d).filter(([x, y]) => !b.nodes.has(K(x, y)) && DIRS.some(([dx, dy]) => b.has(x - dx * d, y - dy * d)));
+  if (!cands.length) return;
+  const [x, y] = cands[Math.floor(Math.random() * cands.length)];
+  b.nodes.set(K(x, y), { x, y, active: false, packId: -1, born: time, level, effect });
+  if (!S.nodeHint) { S.nodeHint = true; S.expandEcho = true; sfx("nodeAppear"); toast("A node appeared! When the path gets close, it wakes and buffs the enemies until you expand onto it for a reward."); }
+}
+
+// ---------------------------------------------------------------- waves
+// Camps send out their free unit as a wave starts: it's launched from the camp and lands on the free tile
+// nearest the camp (or on its matching stack).
+function campsSpawn() {
+  const sent = [];
+  for (const c of [...S.towers.values()]) {
+    const b = c.building && BUILDINGS[c.type];
+    if (!b || !b.spawns) continue;
+    const k = addUnit(b.spawns, nearestFree(center(c.x, c.y)));
+    if (!k) continue; // no room
+    launchUnit(k, b.spawns, center(c.x, c.y));
+    sent.push(unitName(b.spawns));
+  }
+  if (sent.length) toast(`Camps sent out: ${sent.join(", ")}`);
+}
+
+function startWave() {
+  if (S.phase !== "build" && S.phase !== "combat") return;
+  S.snap = takeSnap(); // the board as this wave starts: what Quit saves
+  S.waveTime = 0; S.waveLive = true; S.prep = 0;
+  S.spawned = 0; S.spawnTimer = 0; S.graceTimer = 0; S.bossTimer = 0; S.bossSpawned = false;
+  S.spawnList = [...S.spawnList, ...nextWaveList().map(e => ({ ...e, left: e.count }))]; // timed: unspawned enemies carry over
+  if (S.pendingEntries.length) toast(`Node guards join this wave: ${describeList(S.pendingEntries)}.`);
+  S.pendingEntries = [];
+  if (S.mode !== "timed") S.expandMode = false;
+  campsSpawn();
+  S.phase = "combat";
+  if (isBossWave(S.wave)) toast("Boss wave: the Grub Mother is coming!"); else sfx("waveStart");
+}
+
+function endWave() {
+  const done = S.wave;
+  const interest = interestNow(), mines = 8 * countBuildings("Mine"), pigeon = 5 * al("CourierPigeon");
+  const gold = CFG.waveClearBonus + interest + mines + pigeon, charm = done % CHARMS.everyWaves === 0 ? 1 : 0;
+  S.gold += gold; S.loot += CFG.lootPerWave + S.lootBonus; S.charms += charm; sfx("waveEnd");
+  // what the wave earned pops up above the gold and charms, with a breakdown underneath
+  coinPop(`+${gold}` + (charm ? ` · +${charm} ✦` : ""),
+    [`wave ${CFG.waveClearBonus}`, interest && `interest ${interest}`, mines && `Mines ${mines}`, pigeon && `Pigeon ${pigeon}`].filter(Boolean).join(" · "));
+  if (done >= CFG.firstNodeAfterWave && (done - CFG.firstNodeAfterWave) % CFG.nodeEvery === 0) {
+    // higher-level nodes come on top of the usual one, so late runs get more (and nastier) nodes
+    spawnNode(1);
+    if (done >= NODE_LEVEL_WAVES[2]) spawnNode(2);
+    if (done >= NODE_LEVEL_WAVES[3]) spawnNode(3);
+  }
+  S.wave++;
+  const after = () => {
+    if (S.mode === "timed") {
+      S.phase = "combat"; closeModal();
+      if (isBossWave(done)) { S.waveLive = false; S.prep = S.prepFull = CFG.bossBreak; } // after a boss: a flat breather, then the next wave
+      else startWave();                                                                    // otherwise the next wave arrives on time
+    }
+    else { S.phase = "build"; closeModal(); }                                         // classic: wait for the player
+  };
+  if (S.pendingRewards > 0) { S.phase = "choosing"; offerReward(after); }
+  else after();
+}
+
+// Node rewards: always the same three, in the same three slots (buildings are no longer offered).
+const NODE_PERKS = {
+  EnemyCap: { label: () => `+${CFG.nodeCapBonus} enemy limit`, desc: () => `The board holds ${CFG.nodeCapBonus} more enemies before the countdown starts.`,
+              apply: () => { S.enemyCap += CFG.nodeCapBonus; } },
+  MoreEnemies: { label: () => `+${CFG.nodeEnemyReward.count} enemies`,
+                 desc: () => `${CFG.nodeEnemyReward.count} more ${ENEMIES[CFG.nodeEnemyReward.unit].label}s every wave (it takes a little longer to come out): more kill gold, and +${CFG.nodeEnemyLoot} loot per wave.`,
+                 apply: () => { S.waveExtras.push({ ...CFG.nodeEnemyReward }); S.lootBonus += CFG.nodeEnemyLoot; } },
+  Damage: { label: () => `+${Math.round(CFG.nodeDamageBonus * 100)}% damage`, desc: () => `Every unit deals ${Math.round(CFG.nodeDamageBonus * 100)}% more damage for the rest of the run (picks add up).`,
+            apply: () => { S.damageBonus += CFG.nodeDamageBonus; } },
+};
+
+// Pick 1 of the 3 rewards for each node claimed, shown in the same order every time.
+function offerReward(after) {
+  const done = () => { S.pendingRewards--; if (S.pendingRewards > 0) offerReward(after); else after(); };
+  openModal(S.pendingRewards > 1 ? `Node reward (${S.pendingRewards} to pick)` : "Node reward", "Choose a reward.",
+    Object.values(NODE_PERKS).map(p => ({ label: p.label(), sub: p.desc(), onClick: () => { p.apply(); sfx("upgrade"); done(); } })), true);
+}
+
+function endRun(cashOut, reason) {
+  S.cashedOut = cashOut; S.endReason = reason;
+  if (S.resumed) clearSave(); // a run continued from the save is over: the save goes with it
+  S.finalLoot = cashOut ? S.loot : Math.floor(S.loot * CFG.deathKeepFraction);
+  S.phase = "over"; S.selected = null; S.drag = null; sfx(cashOut ? "bossDown" : "lose");
+  META.loot += S.finalLoot; saveMeta();
+  openGameOver(META.loot);
+}
+
+function tickCombat(dt) {
+  S.clock += dt;
+  const boss = isBossWave(S.wave);
+  if (S.spawnList.length) {
+    S.spawnTimer -= dt;
+    while (S.spawnTimer <= 0 && S.spawnList.length) {
+      const entry = S.spawnList[0];
+      spawnUnit(entry.unit, 0, entry.packId ?? -1);
+      S.spawned++; S.spawnTimer += entry.delay;
+      if (--entry.left <= 0) S.spawnList.shift();
+    }
+  }
+  if (S.boss) S.bossTimer += dt;
+  moveEnemies(dt);
+  tickZones(dt);
+  tickPlanks();
+  towersAttack(dt);
+  updateProjectiles(dt);
+  cleanupDead();
+  if (S.hp <= 0) { S.hp = 0; endRun(false, "The grubs wore down your defenses."); return; }
+  // enemy limit: over it, a countdown runs; drop back under and it resets
+  if (limitMode()) {
+    if (boardLoad() > S.enemyCap) {
+      if (!S.overTime) sfx("warn");
+      if (!S.overTime) toast(`Over the enemy limit! Get back under ${S.enemyCap} within ${CFG.overCapTime}s.`);
+      S.overTime = (S.overTime || 0) + dt;
+      if (S.overTime >= CFG.overCapTime) { endRun(false, "Too many enemies on the board for too long."); return; }
+    } else S.overTime = 0;
+  }
+  // classic: the wave lasts until everything it spawned is dead
+  if (S.mode !== "timed") { if (!S.spawnList.length && !S.enemies.length) endWave(); return; }
+  // timed: a normal wave ends when its timer runs out, enemies or not; the boss wave waits for the boss, who must
+  // die before her own timer runs out
+  if (!S.waveLive) {
+    S.prep -= dt;
+    if (S.prep <= 0) startWave();
+    return;
+  }
+  S.waveTime += dt;
+  if (S.boss && S.bossLeft != null && (S.bossLeft -= dt) <= 0) { S.bossLeft = 0; endRun(false, "The Grub Mother wasn't defeated in time."); return; }
+  if (isBossWave(S.wave)) { if (S.bossSpawned && !S.boss && !S.spawnList.length) endWave(); }
+  else if (S.waveTime >= CFG.waveDuration) endWave();
+}
+
+// ---------------------------------------------------------------- rendering
+const canvas = document.getElementById("c");
+let ctx = canvas.getContext("2d"); // swapped briefly to draw unit icons for the info panel
+let W = 0, H = 0, DPR = 1;
+const cam = { x: 1.5, y: 1.5, s: 60 };
+
+// W/H are design-frame units; the backing store also covers the frame's scale so the board stays sharp
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  W = canvas.clientWidth || r.width; H = canvas.clientHeight || r.height;
+  DPR = Math.min((window.devicePixelRatio || 1) * (W ? r.width / W : 1), 4);
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+}
+new ResizeObserver(resize).observe(canvas);
+
+// scale the fixed 450x800 frame to the window: as large as fits with a 16px margin, or fill a phone-shaped screen
+const FRAME_W = 450, FRAME_H = 800;
+function fitFrame() {
+  const app = document.getElementById("app"), vw = window.innerWidth, vh = window.innerHeight;
+  if (!app.style || !vw) return;
+  const full = vw / vh <= FRAME_W / FRAME_H || vw <= 500;
+  const k = full ? vw / FRAME_W : Math.min((vw - 32) / FRAME_W, (vh - 32) / FRAME_H);
+  app.classList.toggle("full", full);
+  app.style.setProperty("--k", k); app.style.setProperty("--fh", (full ? vh / k : FRAME_H) + "px");
+  resize();
+}
+if (window.addEventListener) window.addEventListener("resize", fitFrame);
+
+function fitCamera(dt, instant) {
+  const { minX, minY, maxX, maxY } = S.board.bounds();
+  let x0 = minX - 1.3, y0 = minY - 1.3, x1 = maxX + 2.3, y1 = maxY + 2.3;
+  // keep every node in view so players can see what they are working toward
+  for (const n of S.board.nodes.values()) {
+    x0 = Math.min(x0, n.x - 0.5); y0 = Math.min(y0, n.y - 0.5);
+    x1 = Math.max(x1, n.x + 1.5); y1 = Math.max(y1, n.y + 1.5);
+  }
+  const s = Math.min(W / (x1 - x0), (H - 30) / (y1 - y0));
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2 - 12 / Math.max(s, 1);
+  fit.s = s; fit.x = cx; fit.y = cy;
+  // the player's pan can't leave the area the auto-fit covers (the board, its margin and the nodes)
+  view.px = Math.max(x0 - cx, Math.min(x1 - cx, view.px)); view.py = Math.max(y0 - cy, Math.min(y1 - cy, view.py));
+  const k = instant || view.fast ? 1 : 1 - Math.exp(-6 * dt); view.fast = false; // dragging and pinching follow the fingers exactly
+  cam.s += (s * view.zoom - cam.s) * k; cam.x += (cx + view.px - cam.x) * k; cam.y += (cy + view.py - cam.y) * k;
+}
+// The player's own view on top of the auto-fit: a zoom multiplier and a pan in tiles. Reset (Fit button, new run) = 1 and 0.
+const fit = { s: 60, x: 1.5, y: 1.5 }, view = { zoom: 1, px: 0, py: 0, fast: false }, ZOOM_MIN = 0.6, ZOOM_MAX = 4;
+// Zoom by a factor, keeping the board point under (sx, sy) (frame units) where it is.
+function zoomAt(f, sx, sy) {
+  const z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, view.zoom * f));
+  if (z === view.zoom) return;
+  const ts = fit.s * view.zoom, wx = fit.x + view.px + (sx - W / 2) / ts, wy = fit.y + view.py - (sy - H / 2) / ts, ns = fit.s * z;
+  view.zoom = z; view.px = wx - (sx - W / 2) / ns - fit.x; view.py = wy + (sy - H / 2) / ns - fit.y;
+}
+// Pan by a screen distance (frame units): the board follows the finger.
+function panBy(dx, dy) { const ts = fit.s * view.zoom; view.px -= dx / ts; view.py += dy / ts; view.fast = true; }
+const resetView = () => { view.zoom = 1; view.px = view.py = 0; };
+const toScreen = (x, y) => [W / 2 + (x - cam.x) * cam.s, H / 2 - (y - cam.y) * cam.s];
+const toWorld = (sx, sy) => [cam.x + (sx - W / 2) / cam.s, cam.y - (sy - H / 2) / cam.s];
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function circle(x, y, r, fill, stroke, lw) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
+}
+
+function drawBody(shape, x, y, size, fill, edge) {
+  const h = size / 2;
+  if (shape === "square") roundRect(x - h, y - h, size, size, size * 0.18);
+  else {
+    ctx.beginPath();
+    if (shape === "circle") ctx.arc(x, y, h, 0, Math.PI * 2);
+    else if (shape === "diamond") { ctx.moveTo(x, y - h * 1.15); ctx.lineTo(x + h * 1.15, y); ctx.lineTo(x, y + h * 1.15); ctx.lineTo(x - h * 1.15, y); ctx.closePath(); }
+    else if (shape === "triangle") { ctx.moveTo(x, y - h * 1.2); ctx.lineTo(x + h * 1.15, y + h * 0.85); ctx.lineTo(x - h * 1.15, y + h * 0.85); ctx.closePath(); }
+    else if (shape === "hex") {
+      for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + i * Math.PI / 3, px = x + Math.cos(a) * h * 1.1, py = y + Math.sin(a) * h * 1.1; if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); }
+      ctx.closePath();
+    }
+  }
+  ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = edge; ctx.lineWidth = 2.5; ctx.stroke();
+}
+
+function drawIcon(icon, x, y, size, s) {
+  ctx.strokeStyle = ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.lineWidth = Math.max(1.5, s * 0.04);
+  ctx.beginPath();
+  if (icon === "bow") {
+    ctx.arc(x - size * 0.05, y, size * 0.22, -Math.PI / 2.4, Math.PI / 2.4);
+    ctx.moveTo(x - size * 0.15, y); ctx.lineTo(x + size * 0.25, y); ctx.stroke();
+  } else if (icon === "sword") {
+    ctx.moveTo(x - size * 0.2, y + size * 0.2); ctx.lineTo(x + size * 0.2, y - size * 0.2);
+    ctx.moveTo(x - size * 0.2, y - size * 0.02); ctx.lineTo(x - size * 0.02, y + size * 0.2); ctx.stroke();
+  } else if (icon === "bomb") {
+    ctx.arc(x - size * 0.03, y + size * 0.05, size * 0.15, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + size * 0.07, y - size * 0.06);
+    ctx.quadraticCurveTo(x + size * 0.18, y - size * 0.24, x + size * 0.26, y - size * 0.18); ctx.stroke();
+  } else if (icon === "coin") {
+    ctx.arc(x, y, size * 0.2, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y - size * 0.11); ctx.lineTo(x, y + size * 0.11); ctx.stroke();
+  } else if (icon === "star") {
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5, r = (i % 2 ? 0.08 : 0.2) * size;
+      const px = x + Math.cos(a) * r, py = y + size * 0.06 + Math.sin(a) * r;
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+function drawBuilding(t, sx, sy, s, sel) {
+  const b = BUILDINGS[t.type], h = s * 0.36;
+  if (t === sel) { roundRect(sx - s * 0.46, sy - s * 0.46, s * 0.92, s * 0.92, s * 0.14); ctx.strokeStyle = COLORS.select; ctx.lineWidth = 3; ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(sx - h, sy - h * 0.1); ctx.lineTo(sx, sy - h * 1.05); ctx.lineTo(sx + h, sy - h * 0.1); ctx.closePath();
+  ctx.fillStyle = b.dark; ctx.fill();
+  roundRect(sx - h * 0.8, sy - h * 0.15, h * 1.6, h * 1.1, h * 0.12);
+  ctx.fillStyle = b.color; ctx.fill(); ctx.strokeStyle = b.dark; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = `800 ${Math.round(h * 0.9)}px "Baloo 2", system-ui, sans-serif`;
+  ctx.fillText(b.glyph, sx, sy + h * 0.42);
+}
+
+// A grub: a head with two body segments trailing behind, wiggling as it crawls.
+function drawGrub(x, y, r, fill, edge, dir, walk) {
+  const bx = -Math.cos(dir), by = Math.sin(dir); // screen-space direction pointing backward
+  const px = -by, py = bx;                        // sideways, for the wiggle
+  const segs = [[1.5, 0.55], [0.8, 0.75]];        // [distance back, size], drawn tail first
+  segs.forEach(([d, sc], i) => {
+    const w = Math.sin(walk - (i + 1) * 1.3) * r * 0.25;
+    circle(x + bx * r * d + px * w, y + by * r * d + py * w, r * sc, fill, edge, 2);
+  });
+  const squash = 1 + 0.08 * Math.sin(walk * 2);
+  ctx.beginPath(); ctx.ellipse(x, y, r * squash, r / squash, -dir, 0, Math.PI * 2);
+  ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = edge; ctx.lineWidth = 2; ctx.stroke();
+}
+
+let time = 0;
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const s = cam.s, b = S.board;
+
+  // path tiles (the ring around the field), with the track down their middle
+  for (const [x, y] of b.ring(1)) {
+    const [sx, sy] = toScreen(x, y + 1);
+    roundRect(sx + s * 0.04, sy + s * 0.04, s * 0.92, s * 0.92, s * 0.12);
+    ctx.fillStyle = COLORS.pathTile; ctx.fill();
+  }
+  const pts = b.path.points.map(p => toScreen(p[0], p[1]));
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath();
+  ctx.strokeStyle = COLORS.pathEdge; ctx.lineWidth = s * 0.34; ctx.stroke();
+  ctx.strokeStyle = COLORS.path; ctx.lineWidth = s * 0.24; ctx.stroke();
+
+  // spawn marker: a burrow at the start of the loop, with an arrow showing travel direction
+  {
+    const p0 = b.path.points[0], p1 = b.path.points[1] || p0;
+    const [sx, sy] = toScreen(p0[0], p0[1]), [tx, ty] = toScreen(p1[0], p1[1]);
+    const ang = Math.atan2(ty - sy, tx - sx), r = s * 0.34;
+    const left = remainingToSpawn();
+    const active = S.phase === "combat" && left > 0;
+    if (active) circle(sx, sy, r * (1.25 + 0.15 * Math.sin(time * 6)), "rgba(231,207,224,0.28)");
+    circle(sx, sy, r, "#3a2a1c", "#e7cfe0", Math.max(2, s * 0.05));
+    // arrow
+    const ax = sx + Math.cos(ang) * r * 1.9, ay = sy + Math.sin(ang) * r * 1.9;
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(ang);
+    ctx.beginPath(); ctx.moveTo(r * 0.45, 0); ctx.lineTo(-r * 0.3, -r * 0.38); ctx.lineTo(-r * 0.3, r * 0.38); ctx.closePath();
+    ctx.fillStyle = "#e7cfe0"; ctx.fill(); ctx.restore();
+    // timed: once the wave is out, the countdown to the next one, with a gold ring that empties as time runs out;
+    // while the boss is out, her timer in red
+    const cd = nextWaveIn();
+    if (cd) {
+      const col = cd.boss ? "#ff5a5f" : "#ffd34d";
+      ctx.beginPath(); ctx.arc(sx, sy, r * 1.25, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, cd.left / cd.full));
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(2.5, s * 0.06); ctx.lineCap = "round"; ctx.stroke();
+      ctx.fillStyle = col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = `800 ${Math.round(r * 0.8)}px "Baloo 2", system-ui, sans-serif`;
+      ctx.fillText(`${Math.ceil(cd.left)}s`, sx, sy + r * 0.06);
+    }
+    // count of enemies still to come out
+    const label = left > 0 ? String(left) : "";
+    if (label && !cd) {
+      ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = `800 ${Math.round(r * 0.95)}px "Baloo 2", system-ui, sans-serif`;
+      ctx.fillText(label, sx, sy + r * 0.06);
+    }
+  }
+
+  // field tiles
+  for (const k of b.field) {
+    const [x, y] = P(k), [sx, sy] = toScreen(x, y + 1);
+    roundRect(sx + s * 0.04, sy + s * 0.04, s * 0.92, s * 0.92, s * 0.12);
+    ctx.fillStyle = COLORS.tile; ctx.fill();
+    ctx.strokeStyle = COLORS.tileEdge; ctx.lineWidth = Math.max(1, s * 0.03); ctx.stroke();
+  }
+
+  // expansion highlights
+  if (S.expandMode) {
+    const pulse = 0.75 + 0.25 * Math.sin(time * 4);
+    ctx.globalAlpha = pulse;
+    for (const [x, y] of b.expandable()) {
+      const [sx, sy] = toScreen(x, y + 1);
+      roundRect(sx + s * 0.08, sy + s * 0.08, s * 0.84, s * 0.84, s * 0.14);
+      ctx.fillStyle = COLORS.expand; ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // nodes
+  for (const n of b.nodes.values()) {
+    const [sx, sy] = toScreen(n.x + 0.5, n.y + 0.5), lv = n.level || 1, r = s * (0.28 + 0.04 * lv);
+    const live = n.active, spent = false, col = NODE_COLORS[lv];
+    // ping new nodes for a few seconds so the eye finds them after the zoom-out
+    if (n.born !== undefined && time - n.born < 3) {
+      const t = ((time - n.born) % 1) / 1;
+      circle(sx, sy, r * (1 + t * 2.4), null, `rgba(194,48,61,${(1 - t).toFixed(2)})`, 3);
+    }
+    if (live) circle(sx, sy, r * (1.45 + 0.15 * Math.sin(time * 6)), lv > 1 ? "rgba(123,63,209,0.25)" : COLORS.nodeGlow);
+    ctx.globalAlpha = spent ? 0.35 : 1;
+    ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r, sy); ctx.closePath();
+    ctx.fillStyle = n.active ? col : "rgba(194,48,61,0.22)"; ctx.fill();
+    ctx.setLineDash(n.active ? [] : [4, 3]);
+    ctx.strokeStyle = n.active ? (lv === 3 ? "#ff4d5e" : "rgba(0,0,0,0.35)") : col; ctx.lineWidth = lv === 3 ? 3 : 2; ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    if (n.effect) { // level 2+ nodes show their effect's symbol
+      ctx.fillStyle = n.active ? "#fff" : col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = `800 ${Math.round(r * 1.05)}px "Baloo 2", system-ui, sans-serif`;
+      ctx.fillText(NODE_EFFECTS[n.effect].glyph, sx, sy + r * 0.05);
+    }
+  }
+
+  // selection range
+  const sel = S.selected && S.towers.get(S.selected);
+  if (sel && sel.building) {
+    if (sel.type === "WarDrum") { // show the boosted 3x3 area
+      const pos = towerPos(sel), [sx, sy] = toScreen(pos[0] - 1.5, pos[1] + 1.5);
+      roundRect(sx, sy, s * 3, s * 3, s * 0.2); ctx.fillStyle = "rgba(255,255,255,0.10)"; ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  } else if (sel) {
+    const pos = towerPos(sel), [sx, sy] = toScreen(pos[0], pos[1]);
+    circle(sx, sy, stats(sel).range * s, "rgba(255,255,255,0.10)", "rgba(255,255,255,0.45)", 1.5);
+  }
+
+  // towers
+  for (const t of S.towers.values()) {
+    const pos = towerPos(t), [sx, sy] = toScreen(pos[0], pos[1]);
+    if (t.landAt > time) continue; // still flying in (see launchUnit)
+    if (t.building) { drawBuilding(t, sx, sy, s, sel); continue; }
+    t.pop = Math.max(0, (t.pop || 0) - 0.06);
+    const u = UNITS[t.type];
+    const tier = tierOf(t), size = (0.5 + 0.06 * Math.min(tier, 4)) * s * (1 + 0.25 * t.pop);
+    if (t === sel) { roundRect(sx - s * 0.46, sy - s * 0.46, s * 0.92, s * 0.92, s * 0.14); ctx.strokeStyle = COLORS.select; ctx.lineWidth = 3; ctx.stroke(); }
+    // idle: a gentle bob, out of step between tiles. attack: melee lunges at the target, ranged units recoil.
+    // while walking to a new tile it hops along; otherwise a gentle idle bob
+    const home = center(t.x, t.y), walking = Math.hypot(pos[0] - home[0], pos[1] - home[1]) > 0.04;
+    const bob = walking ? -Math.abs(Math.sin(time * 16)) * s * 0.12 : Math.sin(time * 2.4 + t.x * 1.7 + t.y * 2.3) * s * 0.03;
+    const atk = t.atkT || 0, k = u.attack.kind === "projectile" ? -0.07 : 0.16, ang = t.aim || 0;
+    const ax = Math.cos(ang) * s * k * atk, ay = -Math.sin(ang) * s * k * atk;
+    // the current action's animation (see ANIMS): offsets the unit, may carry a prop, may add dizzy stars
+    let mx = 0, my = 0, fx = null;
+    const an = t.anim && S.clock < t.anim.end ? t.anim : null;
+    if (an && ANIMS[an.kind]) {
+      const p = (S.clock - an.start) / (an.end - an.start), [tx, ty] = toScreen(an.at[0], an.at[1]);
+      fx = ANIMS[an.kind](p, tx - sx, ty - sy, s); mx = fx.mx || 0; my = fx.my || 0;
+      if (an.prop && fx.propAt && PROPS[an.prop]) PROPS[an.prop](sx + fx.propAt[0], sy + fx.propAt[1], an.ang, s);
+    }
+    if (fx && fx.flames) { // a ring of fire whirling around it
+      const rr = (an.radius || 1.2) * s * 0.85;
+      ctx.globalAlpha = 0.25; circle(sx, sy, rr, "rgba(255,120,30,0.5)"); ctx.globalAlpha = 1;
+      for (let i = 0; i < 10; i++) {
+        const a = -time * 14 + i * Math.PI / 5, fl = 0.75 + 0.25 * Math.sin(time * 30 + i);
+        circle(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr, s * 0.1 * fl, i % 2 ? "#ffd34d" : "#ff7a2f");
+      }
+    }
+    const fsz = size * (1 + 0.12 * atk) * (1 + 0.02 * Math.sin(time * 4.8 + t.x + t.y));
+    if (fx && fx.rot) { // rotating animations draw the figure turned around its own centre
+      ctx.save(); ctx.translate(sx + ax + mx, sy + ay + bob + my); ctx.rotate(fx.rot);
+      drawUnitFigure(t.type, 0, 0, fsz, s, tier); ctx.restore();
+    } else drawUnitFigure(t.type, sx + ax + mx, sy + ay + bob + my, fsz, s, tier);
+    if (fx && fx.stars) for (let i = 0; i < 3; i++) { // stars circling its head
+      const a = time * 6 + i * 2.1;
+      circle(sx + mx + Math.cos(a) * s * 0.26, sy - s * 0.42 + Math.sin(a) * s * 0.07, Math.max(2.5, s * 0.06), "#ffe066", "#b8860b", 1);
+    }
+    if (tier > 1) { // the stack's tier above it
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 3;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.font = `800 ${Math.round(s * 0.22)}px "Baloo 2", system-ui, sans-serif`;
+      ctx.strokeText(`T${tier}`, sx, sy - s * 0.4); ctx.fillText(`T${tier}`, sx, sy - s * 0.4);
+    }
+    for (let i = 0; i < t.count; i++) {
+      const px = sx + (i - (t.count - 1) / 2) * s * 0.16;
+      circle(px, sy + s * 0.38, s * 0.055, "#fff", "rgba(0,0,0,0.4)", 1);
+    }
+  }
+
+  // dragging: the unit stays on its tile while a faint copy follows the pointer, over a dashed outline of the tile
+  // it would go to; on release it walks there
+  if (S.drag && S.drag.moved && S.towers.has(S.drag.from)) {
+    const t = S.towers.get(S.drag.from), [gx, gy] = toScreen(S.drag.world[0], S.drag.world[1]);
+    const cx = Math.floor(S.drag.world[0]), cy = Math.floor(S.drag.world[1]);
+    if (b.has(cx, cy) && K(cx, cy) !== S.drag.from) {
+      const [tx, ty] = toScreen(cx, cy + 1);
+      roundRect(tx + s * 0.06, ty + s * 0.06, s * 0.88, s * 0.88, s * 0.14);
+      ctx.strokeStyle = COLORS.select; ctx.lineWidth = 2.5; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 0.55;
+    if (t.building) drawBuilding(t, gx, gy, s, null);
+    else drawUnitFigure(t.type, gx, gy, (0.5 + 0.06 * Math.min(tierOf(t), 4)) * s, s, tierOf(t));
+    ctx.globalAlpha = 1;
+  }
+
+  // planks (Walk the Plank)
+  for (const p of S.planks) {
+    const [px, py] = toScreen(p.pos[0], p.pos[1]);
+    ctx.save(); ctx.translate(px, py); ctx.rotate(-p.ang + Math.PI / 2);
+    ctx.fillStyle = "#8a5a2b"; ctx.strokeStyle = "#4f3214"; ctx.lineWidth = 2;
+    ctx.fillRect(-s * 0.36, -s * 0.1, s * 0.72, s * 0.2); ctx.strokeRect(-s * 0.36, -s * 0.1, s * 0.72, s * 0.2);
+    ctx.beginPath(); ctx.moveTo(-s * 0.12, -s * 0.1); ctx.lineTo(-s * 0.12, s * 0.1); ctx.moveTo(s * 0.12, -s * 0.1); ctx.lineTo(s * 0.12, s * 0.1); ctx.stroke();
+    ctx.restore();
+  }
+
+  // fire patches on the ground
+  for (const z of S.zones) {
+    const [zx, zy] = toScreen(z.pos[0], z.pos[1]), left = Math.max(0, (z.until - S.clock) / z.dur);
+    ctx.globalAlpha = 0.3 + 0.5 * Math.min(1, left * 2);
+    circle(zx, zy, z.r * s * (0.95 + 0.05 * Math.sin(time * 12)), "rgba(255,110,30,0.5)", "#ff9a3c", 2);
+    for (let i = 0; i < 5; i++) { // little flames
+      const a = time * 3 + i * 1.26, d = z.r * s * 0.5;
+      circle(zx + Math.cos(a) * d, zy + Math.sin(a) * d - Math.abs(Math.sin(time * 9 + i)) * s * 0.08, s * 0.07, "#ffd34d");
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // new-unit pings: two rings pulse out from the unit for about a second (they follow it if it's walking over)
+  S.pings = S.pings.filter(p => time - p.born < 1.2 && S.towers.has(p.key));
+  for (const p of S.pings) {
+    const t = S.towers.get(p.key), pos = towerPos(t), [px, py] = toScreen(pos[0], pos[1]);
+    for (let i = 0; i < 2; i++) {
+      const a = (time - p.born) / 0.8 - i * 0.3;
+      if (a < 0 || a > 1) continue;
+      ctx.globalAlpha = (1 - a) * 0.9;
+      circle(px, py, s * (0.35 + 0.55 * a), null, p.color, 3);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // enemies
+  for (const e of S.enemies) {
+    let [sx, sy] = toScreen(e.pos[0], e.pos[1]);
+    const r = e.size * s / 2;
+    let tumble = 0;
+    if (e.flight) { // in the air: a high arc with a shadow on the ground, tumbling end over end
+      const p = Math.min(1, e.flight.t / e.flight.dur), lift = Math.sin(Math.PI * p) * s * 1.6;
+      ctx.globalAlpha = 0.35; circle(sx, sy, r * (1 - 0.4 * Math.sin(Math.PI * p)), "rgba(0,0,0,0.6)"); ctx.globalAlpha = 1;
+      sy -= lift; tumble = p * Math.PI * 4;
+    }
+    const def = ENEMIES[e.kind], fill = def.fill, edge = def.edge;
+    drawGrub(sx, sy, r, fill, edge, (e.dir || 0) + tumble, e.walk || 0);
+    if (e.slowUntil && S.clock < e.slowUntil) circle(sx, sy, r + 3, null, "rgba(150,200,255,0.95)", 2.5);
+    if (e.burnUntil && S.clock < e.burnUntil) circle(sx, sy, r + (e.slowUntil && S.clock < e.slowUntil ? 6 : 3), null, `rgba(255,140,40,${(0.6 + 0.4 * Math.sin(time * 14)).toFixed(2)})`, 2.5);
+    if (e.holdUntil && S.clock < e.holdUntil) {
+      if (e.holdKind === "freeze") { // encased in ice
+        circle(sx, sy, r * 1.3, "rgba(190,235,255,0.55)", "#e8f8ff", 2);
+        circle(sx - r * 0.4, sy - r * 0.4, r * 0.25, "rgba(255,255,255,0.8)");
+      } else if (e.holdKind === "root") { // vines around the body
+        ctx.strokeStyle = "#5fbf3a"; ctx.lineWidth = 2.5;
+        for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(sx, sy + r * 0.3, r * (0.8 + 0.25 * i), Math.PI * 0.05, Math.PI * 0.95); ctx.stroke(); }
+      } else for (let i = 0; i < 3; i++) { // stun: stars circling overhead
+        const a = time * 5 + i * 2.1;
+        circle(sx + Math.cos(a) * r * 0.9, sy - r * 1.1 + Math.sin(a) * r * 0.25, Math.max(2, r * 0.18), "#ffe066");
+      }
+    }
+    ctx.strokeStyle = edge; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctx.arc(sx, sy, r * 0.55, Math.PI * 0.15, Math.PI * 0.85); ctx.stroke();
+    if (e.isBoss || e.hp < e.maxHp) {
+      const w = Math.max(18, r * 2), ratio = Math.max(0, e.hp / e.maxHp);
+      ctx.fillStyle = COLORS.hpBack; ctx.fillRect(sx - w / 2, sy - r - 8, w, 5);
+      ctx.fillStyle = COLORS.hp; ctx.fillRect(sx - w / 2, sy - r - 8, w * ratio, 5);
+    }
+    // damage this enemy will deal when it finishes its next lap
+    if (e.laps >= 1 && !limitMode()) {
+      const fs = Math.round(Math.max(11, r * 1.15));
+      ctx.font = `800 ${fs}px "Baloo 2", system-ui, sans-serif`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(120,0,20,0.9)"; ctx.fillStyle = "#fff";
+      const nd = String(e.laps * (ENEMIES[e.kind].damageMult || 1));
+      ctx.strokeText(nd, sx, sy + 1); ctx.fillText(nd, sx, sy + 1);
+    }
+  }
+
+  // cone attacks: a stationary wedge that fades out (world y is up, screen y is down, so angles flip)
+  for (const f of S.flashes) {
+    const [ox, oy] = toScreen(f.o[0], f.o[1]);
+    ctx.globalAlpha = 0.5 * Math.max(0, f.ttl / f.max);
+    ctx.beginPath();
+    if (f.kind === "blast") ctx.arc(ox, oy, f.range * s * (1.15 - 0.3 * f.ttl / f.max), 0, Math.PI * 2);
+    else if (f.kind === "flip") { // the arc of an enemy flipped across the board
+      const [tx, ty] = toScreen(f.to[0], f.to[1]), mx = (ox + tx) / 2, my = (oy + ty) / 2 - s * 1.5;
+      ctx.globalAlpha = Math.max(0, f.ttl / f.max); ctx.strokeStyle = f.color; ctx.lineWidth = 3; ctx.setLineDash([7, 5]);
+      ctx.moveTo(ox, oy); ctx.quadraticCurveTo(mx, my, tx, ty); ctx.stroke(); ctx.setLineDash([]);
+      continue;
+    }
+    else if (f.kind === "slash") { // a short strike mark across the target
+      const a = -f.ang + Math.PI / 2, l = s * 0.32;
+      ctx.globalAlpha = Math.max(0, f.ttl / f.max); ctx.strokeStyle = f.color; ctx.lineWidth = Math.max(3, s * 0.08); ctx.lineCap = "round";
+      ctx.moveTo(ox - Math.cos(a) * l, oy - Math.sin(a) * l); ctx.lineTo(ox + Math.cos(a) * l, oy + Math.sin(a) * l); ctx.stroke();
+      continue;
+    }
+    else { ctx.moveTo(ox, oy); ctx.arc(ox, oy, f.range * s, -f.ang - f.half, -f.ang + f.half); ctx.closePath(); }
+    ctx.fillStyle = f.color; ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // projectiles
+  for (const p of S.projectiles) {
+    const [px, py] = toScreen(p.pos[0], p.pos[1]), ang = -(p.ang || 0), len = s * 0.22;
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(2, s * 0.05);
+    ctx.beginPath(); ctx.moveTo(px - Math.cos(ang) * len, py - Math.sin(ang) * len); ctx.lineTo(px, py); ctx.stroke();
+    circle(px, py, Math.max(2.5, s * (p.big ? 0.13 : p.splash ? 0.1 : 0.06)), p.big ? (p.ball || "#2b2b2b") : p.color, p.ball ? "#9cc4e0" : "#fff", 1);
+  }
+
+  // death animations
+  for (const c of S.corpses) {
+    const [cx, cy] = toScreen(c.x, c.y), p = 1 - c.ttl / c.max, r = c.r * s, def = ENEMIES[c.kind];
+    ctx.globalAlpha = Math.max(0, 1 - p);
+    circle(cx, cy, r * (1 + 0.5 * p), def.fill, def.edge, 2);
+    for (let i = 0; i < 6; i++) { // bits flying outward
+      const a = c.dir + i * Math.PI / 3, d = r * (0.6 + 1.8 * p);
+      circle(cx + Math.cos(a) * d, cy - Math.sin(a) * d, Math.max(1.5, r * 0.22 * (1 - p)), def.fill, def.edge, 1);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // gold coins
+  for (const c of S.coins) {
+    const [cx, cy] = toScreen(c.x, c.y + c.z * 0.35), r = Math.max(3, s * 0.1);
+    ctx.globalAlpha = Math.min(1, c.ttl / (c.max * 0.5));
+    if (c.item) { // item drop: a purple gem
+      ctx.beginPath(); ctx.moveTo(cx, cy - r * 1.5); ctx.lineTo(cx + r * 1.1, cy); ctx.lineTo(cx, cy + r * 1.5); ctx.lineTo(cx - r * 1.1, cy); ctx.closePath();
+      ctx.fillStyle = "#c58bff"; ctx.fill(); ctx.strokeStyle = "#6b2fb3"; ctx.lineWidth = 1.5; ctx.stroke();
+      continue;
+    }
+    circle(cx, cy, r, "#ffd34d", "#b8860b", 1.5);
+    circle(cx - r * 0.25, cy - r * 0.25, r * 0.35, "rgba(255,255,255,0.75)");
+  }
+  ctx.globalAlpha = 1;
+
+  // over the enemy limit: the board's edge pulses red
+  if (S.overTime > 0) {
+    ctx.globalAlpha = 0.35 + 0.35 * Math.abs(Math.sin(time * 6));
+    ctx.strokeStyle = "#e0303d"; ctx.lineWidth = 10; ctx.strokeRect(5, 5, W - 10, H - 10);
+    ctx.globalAlpha = 1;
+  }
+
+  // damage numbers
+  for (const h of S.hits) {
+    const [hx, hy] = toScreen(h.pos[0], h.pos[1] + (1 - h.ttl) * 0.8);
+    ctx.globalAlpha = Math.max(0, Math.min(1, h.ttl));
+    ctx.font = `800 ${Math.round(s * 0.42)}px "Baloo 2", system-ui, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.fillStyle = h.color || "#ff5a5f";
+    ctx.strokeText(h.text, hx, hy); ctx.fillText(h.text, hx, hy);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// New units (summoned, gambled, sent by a camp) shoot out of where they came from in an arc and land on their
+// tile. They're drawn on the #fx overlay (the whole frame) so a flight can start on a button, outside the board.
+// Cosmetic only: the unit is placed and fighting at once; a new tile just isn't drawn until it lands.
+const fxCanvas = document.getElementById("fx"), fxCtx = fxCanvas.getContext("2d");
+const FLY_TIME = 0.55;
+let fxDrawn = false;
+// `from` is a button (launch from its centre as it is now) or a world point such as a camp's tile centre.
+function launchUnit(k, type, from) {
+  const t = S.towers.get(k);
+  if (t.building || t.count === 1) t.landAt = time + FLY_TIME;
+  const p = S.pings.find(p => p.key === k); if (p) p.born = time + FLY_TIME; // rings pulse on landing
+  let src;
+  if (Array.isArray(from)) src = { world: from };
+  else { const r = from.getBoundingClientRect(); src = { screen: [r.left + r.width / 2, r.top + r.height / 2] }; }
+  S.flyers.push({ key: k, type, born: time, src });
+}
+function drawFlyers() {
+  const fw = fxCanvas.clientWidth, fh = fxCanvas.clientHeight;
+  if (!fw || (!S.flyers.length && !fxDrawn)) return;
+  if (fxCanvas.width !== Math.round(fw * DPR)) { fxCanvas.width = Math.round(fw * DPR); fxCanvas.height = Math.round(fh * DPR); }
+  fxCtx.setTransform(DPR, 0, 0, DPR, 0, 0); fxCtx.clearRect(0, 0, fw, fh);
+  fxDrawn = S.flyers.length > 0;
+  if (!fxDrawn) return;
+  // everything in frame units: board origin and button centre relative to the overlay
+  const fr = fxCanvas.getBoundingClientRect(), k = fr.width / fw, cr = canvas.getBoundingClientRect();
+  const ox = (cr.left - fr.left) / k, oy = (cr.top - fr.top) / k, s = cam.s;
+  const main = ctx; ctx = fxCtx;
+  for (let i = S.flyers.length - 1; i >= 0; i--) {
+    const f = S.flyers[i], t = S.towers.get(f.key), p = (time - f.born) / FLY_TIME;
+    if (!t || p >= 1) { if (t) t.pop = 1; S.flyers.splice(i, 1); continue; }
+    let fx0, fy0;
+    if (f.src.world) { [fx0, fy0] = toScreen(f.src.world[0], f.src.world[1]); fx0 += ox; fy0 += oy; }
+    else { fx0 = (f.src.screen[0] - fr.left) / k; fy0 = (f.src.screen[1] - fr.top) / k; }
+    const [tx, ty] = toScreen(t.x + 0.5, t.y + 0.5), e = 1 - (1 - p) * (1 - p); // eased: fast out of the source
+    const gx = fx0 + (tx + ox - fx0) * e, gy = fy0 + (ty + oy - fy0) * e;
+    const lift = Math.sin(Math.PI * p) * Math.min(s * 1.6, s * 0.6 + Math.hypot(tx + ox - fx0, ty + oy - fy0) * 0.35); // short hops stay low
+    const u = UNITS[f.type], tier = tierOf(t), grow = 0.6 + 0.4 * p, size = (!u ? 0.72 : 0.5 + 0.06 * Math.min(tier, 4)) * s * grow;
+    ctx.globalAlpha = 0.25 * p; circle(gx, gy, size * 0.45, "rgba(0,0,0,0.6)"); ctx.globalAlpha = 1; // shadow
+    ctx.save(); ctx.translate(gx, gy - lift);
+    if (!u) drawBuilding({ type: f.type }, 0, 0, s * grow, null); // a building: no spin
+    else { ctx.rotate((1 - e) * -Math.PI * 2); drawUnitFigure(f.type, 0, 0, size, s, tier); }
+    ctx.restore();
+  }
+  ctx = main;
+}
+
+// A unit's figure: family shape and icon, with a glow for Tier 2 and up.
+function drawUnitFigure(id, sx, sy, size, s, tier = 1) {
+  const u = UNITS[id], f = FAMILIES[u.family], rim = tierRim(tier);
+  if (rim) { ctx.save(); ctx.shadowColor = rim; ctx.shadowBlur = size * 0.4; drawBody(f.shape, sx, sy, size * 1.1, rim, rim); ctx.restore(); }
+  drawBody(f.shape, sx, sy, size, u.color, u.dark);
+  drawIcon(f.icon, sx, sy, size, s);
+}
+
+// small images of unit figures for the info panel
+const imgCache = {};
+function unitImg(id) {
+  if (imgCache[id]) return imgCache[id];
+  const c = document.createElement("canvas"); c.width = c.height = 60;
+  const saved = ctx; ctx = c.getContext("2d"); ctx.lineJoin = "round";
+  drawUnitFigure(id, 30, 30, 34, 50);
+  ctx = saved;
+  return (imgCache[id] = c.toDataURL());
+}
+
+// Where a unit is drawn: its visual position, which glides to its tile, so moved and swapped units visibly walk
+// over instead of jumping. While dragged it stays put; a ghost follows the pointer instead (see draw).
+function towerPos(t) {
+  if (!t.vis) t.vis = center(t.x, t.y);
+  return t.vis;
+}
+
+// ---------------------------------------------------------------- HUD
+const $ = id => document.getElementById(id);
+const els = { wave: $("wave"), hp: $("hp"), enemies: $("enemies"), gold: $("goldv"), loot: $("loot"), purse: $("purse"), ubtns: $("ubtns"), phase: $("phase"),
+  toasts: $("toasts"), hint: $("hint"), info: $("info"), summon: $("summon"), expand: $("expand"), speed: $("speed"), sound: $("soundBtn"), fb: $("fbBtn"), quit: $("quitBtn"), upg: $("upg"), upgBtn: $("upgBtn"), gam: $("gam"), gamBtn: $("gamBtn"), charms: $("charmsv") };
+const app = $("app");
+const cache = {};
+function setHTML(key, el, html) { if (cache[key] !== html) { cache[key] = html; el.innerHTML = html; } }
+function setText(key, el, text) { if (cache[key] !== text) { cache[key] = text; el.textContent = text; } }
+function setDis(key, el, v) { if (cache[key] !== v) { cache[key] = v; el.disabled = v; } }
+
+// a coin and amount pop up above the gold and charms, with an optional small line under it (end-of-wave earnings)
+function coinPop(text, sub) {
+  const el = document.createElement("div");
+  el.className = "coinpop"; el.innerHTML = `<i></i>${text}` + (sub ? `<small>${sub}</small>` : "");
+  el.addEventListener("animationend", () => el.remove());
+  els.purse.appendChild(el);
+}
+
+// The selected unit's skills and attack effects, as small tags; each opens a short description when tapped.
+function unitTags(s) {
+  const a = s.attack, tags = [], tag = (id, label, text) => tags.push({ id, label, text });
+  if (a.kind === "pulse") tag("pulse", "Pulse", "Strikes every enemy within its reach at once.");
+  if (a.sweep) tag("sweep", "Sweep", `Each attack has a ${Math.round(a.sweep.chance * 100)}% chance to swing in a ${a.sweep.angle}° arc and hit every enemy in it.`);
+  if (s.rapid) tag("rapid", "Rapid fire", `Every ${s.rapid.every}s, when an enemy is in reach, it shoots ${s.rapid.mult}x as fast for ${s.rapid.duration}s.`);
+  if (a.kind === "cone") tag("cone", "Cleave", `Hits up to ${a.maxHits} enemies in a ${a.angle}° cone in front of it.`);
+  if (a.kind === "zone") tag("zone", "Fire patch", `Sets the path under the furthest enemy on fire for ${a.duration}s; its damage is per second, to everything standing in it.`);
+  if (a.pierce) tag("pierce", a.explode ? "Snowball" : "Cannonball", a.explode ? `Flies straight for up to ${a.travel} tiles and bursts on the first enemy it reaches.` : `Flies straight for ${a.travel} tiles, hitting every enemy it passes.`);
+  if (a.slow) tag("slow", "Slow", `Hits slow enemies by ${Math.round(a.slow.amount * 100)}% for ${a.slow.duration}s.`);
+  if (a.burn) tag("burn", "Burn", `Sets enemies alight: ${a.burn.dps} damage per second for ${a.burn.duration}s.`);
+  if (a.root) tag("root", "Entangle", `Vines hold the target in place for ${a.root}s (bosses half as long).`);
+  if (a.freeze) tag("freeze", "Freeze", `The blast freezes up to ${a.freezeMax || "all"} enemies for ${a.freeze}s (bosses half as long).`);
+  if (a.gold) tag("gold", "Steal", a.goldChance ? `Each hit has a ${Math.round(a.goldChance * 100)}% chance to steal ${a.gold} gold.` : `Each hit steals ${a.gold} gold.`);
+  if (a.itemChance) tag("item", "Plunder", `${Math.round(a.itemChance * 100)}% chance of an item drop on a kill (items coming soon).`);
+  if (s.skill) tag("skill", "Shield Bash", `Every ${s.skill.every}s, bashes the furthest enemy in reach and stuns it for ${s.skill.stun}s.`);
+  if (s.ramp) tag("ramp", "Frenzy", `Attacks faster the longer it keeps fighting, up to ${Math.round(s.ramp.max * 100)}% faster; resets after ${s.ramp.reset}s without attacking.`);
+  if (s.secondary) tag("sec", s.secondary.name[0].toUpperCase() + s.secondary.name.slice(1), `A second weapon: ${s.secondary.damage} damage every ${+(1 / s.secondary.aps).toFixed(1)}s, range ${s.secondary.range}.`);
+  if (s.plank) tag("plank", "Walk the Plank", `Lays a plank on a path tile next to it (needs an edge tile). The first enemy to step on it is flipped across the board. A boss is too heavy: the plank snaps and this unit is stunned for ${(s.plank.heavy && s.plank.heavy.stun) || 0}s. A new plank comes ${s.plank.every}s after each use.`);
+  if (s.spin) tag("spin", "Flame Spin", `Every ${s.spin.every}s, spins for ${s.spin.duration}s, hitting everything within ${s.spin.radius} tiles for ${s.spin.damage} every ${s.spin.tick}s and setting it alight.`);
+  return tags;
+}
+
+// The unit info pill at the top of the board: name and tier, four stat cells (damage, speed, range, AoE), and tags
+// for its skills that open a short description when tapped.
+function infoHTML(sel) {
+  if (!sel || sel.building) return "";
+  const u = UNITS[sel.type], s = boosted(sel), a = s.attack;
+  const aoe = a.splash ? `${a.splash} tiles` : a.kind === "pulse" ? `${s.range} tiles` : a.sweep ? `${a.sweep.angle}° sweep` : a.kind === "cone" ? `${a.angle}°` : a.kind === "zone" ? `${a.radius} tiles` : s.spin ? `${s.spin.radius} spin` : "—";
+  const cell = (k, v) => `<div><small>${k}</small><b>${v}</b></div>`;
+  let h = `<div class="head"><span class="name">${unitName(sel.type)}</span><span class="muted">`
+    + `Tier ${tierOf(sel)} · stack ${sel.count}/${STACK_MAX}` + `</span></div>`;
+  h += `<div class="stats">${cell("Damage", +s.damage.toFixed(1) + (sel.count > 1 ? ` ×${sel.count}` : "") + (a.kind === "zone" ? "/s" : ""))}`
+    + `${cell("Speed", `${s.aps}/s`)}${cell("Range", s.range)}${cell("AoE", aoe)}</div>`;
+  const tags = unitTags(s);
+  if (drumsNear(sel)) tags.push({ id: "drum", label: "War Drum", text: `A War Drum next to it adds ${25 * drumsNear(sel)}% damage.` });
+  if (tags.length) {
+    h += `<div class="tags">${tags.map(t => `<button data-tag="${t.id}" class="${S.infoTag === t.id ? "on" : ""}">${t.label}</button>`).join("")}</div>`;
+    const open = tags.find(t => t.id === S.infoTag);
+    if (open) h += `<div class="tagtext">${open.text}</div>`;
+  }
+  return h;
+}
+
+// The buttons that float on the selected unit: Sell on top and Merge on the bottom, with a gap for the unit between them.
+function unitBtnsHTML(sel, locked) {
+  if (!sel || sel.building) return "";
+  const dis = locked ? " disabled" : "";
+  const b = canMerge(sel) && !locked ? `<button class="primary" data-merge>Merge</button>` : `<button data-merge disabled>Merge</button>`;
+  return `<div class="ut"><button data-sell${dis}>Sell +${sellValue(sel)}g${sellCharms(sel) ? ` +${sellCharms(sel)}✦` : ""}</button></div>`
+    + `<div class="ugap"></div><div class="ub">${b}</div>`;
+}
+
+// Sell sits just above the selected unit and Merge just below. With no room above (the info pill is in the way),
+// both rows go below the unit, Sell first, and never under the pill. Kept inside the board.
+function placeUnitBtns(sel) {
+  const el = els.ubtns, show = !!sel && !sel.building && !(S.drag && S.drag.moved);
+  if (el.hidden !== !show) el.hidden = !show;
+  if (!show || !el.children[1]) return;
+  const pos = towerPos(sel), [sx, sy] = toScreen(pos[0], pos[1]), s = cam.s, th = el.children[0].offsetHeight;
+  const pill = els.info.hidden ? 0 : $("topstack").offsetTop + els.info.offsetTop + els.info.offsetHeight;
+  const around = sy - s * 0.55 - th > pill + 4;
+  el.children[1].style.height = (around ? s * 1.1 : 6) + "px";
+  const w = el.offsetWidth;
+  el.style.left = Math.max(4, Math.min(W - w - 4, sx - w / 2)) + "px";
+  el.style.top = (around ? sy - s * 0.55 - th : Math.max(sy + s * 0.55, pill + 4)) + "px";
+}
+
+function updateHUD() {
+  const overlay = S.phase === "over" || S.phase === "choosing" || S.phase === "shop" || S.phase === "menu";
+  // Home and the Workshop are full screens: no stat bar or action buttons
+  const noGame = S.phase === "menu" || S.phase === "shop";
+  if (cache.noGame !== noGame) { cache.noGame = noGame; app.classList.toggle("nogame", noGame); }
+  setHTML("wave", els.wave, `<b>Wave ${S.wave}${isBossWave(S.wave) ? " · Boss" : ""}</b>`);
+  const lim = limitMode(), load = boardLoad(), over = lim && load > S.enemyCap;
+  if (lim) { // over the limit, the countdown joins the line
+    setHTML("hp", els.hp, `<b>${load}</b><span>/ ${S.enemyCap} enemies</span>` + (over ? `<span>· ${Math.max(0, Math.ceil(CFG.overCapTime - S.overTime))}s until you lose</span>` : ""));
+    els.hp.classList.toggle("danger", load > S.enemyCap * 0.8);
+  } else {
+    setHTML("hp", els.hp, `<b>${S.hp}</b><span>/ ${S.maxHp} HP</span>`);
+    els.hp.classList.toggle("danger", S.hp <= S.maxHp * 0.3);
+  }
+  // classic also shows the enemies on the board; timed has the limit line only
+  if (els.enemies.hidden !== lim) els.enemies.hidden = lim;
+  if (!lim) setHTML("en", els.enemies, `<b>${S.enemies.length}</b><span>enemies</span>`);
+  setHTML("gold", els.gold, `<b>${S.gold}</b><span>gold</span>`);
+  setHTML("loot", els.loot, `<b>${S.loot}</b><span>loot</span>`);
+  setHTML("charms", els.charms, `<b>${S.charms}</b><span>✦ charms</span>`);
+  const left = remainingToSpawn();
+  let ph = "";
+  // timed: the countdown lives on the burrow; the header says what's coming
+  if (S.phase === "combat") ph = S.mode !== "timed" ? (left > 0 ? `${left} left to spawn` : `Clear ${S.enemies.length} more`)
+    : S.waveLive && isBossWave(S.wave) ? (left > 0 ? `${left} left to spawn` : `Defeat the boss` + (S.bossLeft != null ? ` · ${Math.ceil(S.bossLeft)}s` : ""))
+    : `Next: ${describeList(nextWaveList(S.waveLive ? S.wave + 1 : S.wave))}`;
+  else if (S.phase === "build") {
+    const boosts = [...S.board.nodes.values()].filter(n => n.active && n.effect).map(n => NODE_EFFECTS[n.effect].label);
+    ph = `Next: ${describeList(nextWaveList())}` + (boosts.length ? ` · enemy boosts: ${boosts.join(", ")}` : "");
+  }
+  if (S.phase === "combat" && S.boss && S.mode !== "timed") { // laps only cost health in Classic
+    const hit = S.boss.laps * (ENEMIES[S.boss.kind].damageMult || 1);
+    ph = `Grub Mother lap ${S.boss.laps + 1}: ` + (hit ? `hits for ${hit}` : "no damage yet");
+  }
+  setText("phase", els.phase, ph);
+
+  setHTML("toasts", els.toasts, S.toasts.map(t => `<div class="toast">${t.text}</div>`).join(""));
+
+  const sel = S.selected && S.towers.get(S.selected);
+  let hint = "";
+  if (sel && sel.building) {
+    const b = BUILDINGS[sel.type];
+    hint = `${b.label}: ${b.desc}` + (b.favors ? ` Tier 1 ${b.favors} odds now ${Math.round(oddsIn(BASE_UNITS, b.favors) * 100)}%.` : "") + " Drag to move.";
+  }
+  else if (sel) hint = "";
+  else if (S.expandMode) hint = `Tap a green tile to expand for ${expandCost()}g. A node wakes when the path touches it.`;
+  else if (S.phase === "build" && S.towers.size === 0) hint = "Summon a few towers, then start the wave.";
+  setText("hint", els.hint, hint);
+  setDis("quitD", els.quit, overlay);
+  setText("sound", els.sound, `Sound: ${META.mute ? "off" : "on"}`);
+  if (cache.infoSel !== sel) { cache.infoSel = sel; S.infoTag = null; } // a newly selected unit starts with its tags closed
+  const ih = infoHTML(sel), upgOpen = !els.upg.hidden || !els.gam.hidden;
+  if (!els.gam.hidden) setHTML("gam", els.gam, gamHTML(overlay));
+  setHTML("info", els.info, ih);
+  if (els.info.hidden !== !ih) els.info.hidden = !ih;
+  if (upgOpen) setHTML("upg", els.upg, upgHTML(overlay));
+  setHTML("ubtns", els.ubtns, unitBtnsHTML(sel, overlay));
+  placeUnitBtns(sel);
+
+  const cost = summonCost();
+  setHTML("summon", els.summon, `Summon<small>${cost}g</small>`);
+  setDis("summonD", els.summon, overlay || S.gold < cost || S.board.field.size <= S.towers.size);
+  const ec = expandCost();
+  const expandNow = S.phase === "build" || (S.mode === "timed" && S.phase === "combat");
+  setHTML("expand", els.expand, S.expandMode ? "Cancel<small>expand</small>" : !expandNow && S.phase === "combat" ? "Expand<small>after wave</small>" : `Expand<small>${ec}g</small>`);
+  setDis("expandD", els.expand, overlay || !expandNow || (!S.expandMode && S.gold < ec));
+  els.expand.classList.toggle("primary", S.expandMode);
+  els.expand.classList.toggle("echo", !!S.expandEcho);
+  setText("speed", els.speed, `Speed ${S.speed}×`);
+  setDis("speedD", els.speed, speeds().length < 2); // faster speeds come from Research
+}
+
+// modal
+const modal = $("modal");
+function openModal(title, body, actions, stacked) {
+  $("mTitle").textContent = title; $("mBody").textContent = body;
+  const box = $("mActions"); box.innerHTML = ""; box.classList.toggle("stack", !!stacked);
+  for (const a of actions) {
+    const btn = document.createElement("button");
+    btn.textContent = a.label; if (a.primary) btn.className = "primary";
+    if (a.sub) { const sm = document.createElement("small"); sm.textContent = a.sub; btn.appendChild(sm); }
+    btn.addEventListener("click", a.onClick); box.appendChild(btn);
+  }
+  modal.classList.add("open");
+  box.querySelector("button")?.focus();
+}
+function closeModal() { modal.classList.remove("open"); }
+function openGameOver(total) {
+  openModal(S.cashedOut ? "Cashed out" : "Defeated",
+    `${S.endReason}\nWaves cleared: ${S.wave - 1}\nLoot kept: ${S.finalLoot}\nLoot to spend in the Workshop: ${total}`,
+    [{ label: "Main menu", onClick: openMenu }, { label: "Play again", primary: true, onClick: newGame }]); // the Workshop button is hidden while the Workshop is parked
+}
+
+// ---------------------------------------------------------------- workshop screen
+// Three full screens share this element: the Workshop (unit upgrades), Research (speed, economy, quality of life)
+// and Artifacts (unlock, level, equip 3). Each has one way out: back to the main menu.
+let shopView = "workshop";
+function renderShop() {
+  const row = (name, tag, now, next, btns) =>
+    `<div class="item"><div class="txt"><b>${name}</b> <span class="muted">${tag}</span><small>${now}${next ? ` → ${next}` : ""}</small></div>${btns}</div>`;
+  const art = shopView === "artifacts", res = shopView === "research";
+  let h = `<h2>${art ? "Artifacts" : res ? "Research" : "Workshop"}</h2><div class="muted">Loot: <b>${META.loot}</b> · `
+    + (art ? `Unlock and level artifacts with loot, and equip up to ${ARTIFACT_SLOTS}; equipped ones apply from your next run.</div>`
+      : res ? "Permanent upgrades to game speed, your economy and quality of life. They apply from your next run.</div>"
+      : "Permanent unit upgrades. None yet: units grow by merging.</div>");
+  if (res) for (const [id, r] of Object.entries(RESEARCH)) {
+    const l = rl(id), c = r.cost(l), maxed = l >= r.max, locked = r.needs && !rl(r.needs);
+    h += row(r.label, r.max > 1 ? `Lv ${l}/${r.max}` : l ? "Done" : "", l ? r.desc(l) : locked ? `Needs ${RESEARCH[r.needs].label} first` : "Not researched yet",
+      maxed || locked ? "" : r.desc(l + 1),
+      maxed ? `<button disabled>${r.max > 1 ? "Maxed" : "Done"}</button>` : `<button data-research="${id}"${META.loot < c || locked ? " disabled" : ""}>Research · ${c}</button>`);
+  }
+  if (!art && !res && Object.keys(WORKSHOP).length) h += `<h3>Unit upgrades</h3>`;
+  if (!art && !res) for (const [id, w] of Object.entries(WORKSHOP)) {
+    const l = wl(id), c = w.cost(l), maxed = l >= w.max;
+    h += row(w.label, `Lv ${l}/${w.max}`, l ? w.desc(l) : "Not bought yet", maxed ? "" : w.desc(l + 1),
+      maxed ? `<button disabled>Maxed</button>` : `<button data-buy="${id}"${META.loot < c ? " disabled" : ""}>Buy · ${c}</button>`);
+  }
+  if (art) h += `<h3>Equipped <span class="muted">· ${META.equipped.length}/${ARTIFACT_SLOTS}</span></h3>`;
+  if (art) for (const [id, a] of Object.entries(ARTIFACTS)) {
+    const l = META.artifacts[id] || 0, eq = META.equipped.includes(id);
+    let btns, tag;
+    if (!l) { tag = "Locked"; btns = `<button data-unlock="${id}"${META.loot < a.unlock ? " disabled" : ""}>Unlock · ${a.unlock}</button>`; }
+    else {
+      tag = a.max > 1 ? `Lv ${l}/${a.max}` : "Owned";
+      const c = a.upCost(l);
+      btns = (l < a.max ? `<button data-up="${id}"${META.loot < c ? " disabled" : ""}>Level · ${c}</button>` : "")
+        + `<button data-equip="${id}" class="${eq ? "primary" : ""}"${!eq && META.equipped.length >= ARTIFACT_SLOTS ? " disabled" : ""}>${eq ? "Equipped" : "Equip"}</button>`;
+    }
+    h += row(a.label, tag, a.desc(Math.max(1, l)), l && l < a.max ? a.desc(l + 1) : "", btns);
+  }
+  h += `<button class="start" data-menu>Back</button>`;
+  $("shop").innerHTML = h;
+}
+function openShop(view = "workshop") { closeModal(); S.phase = "shop"; S.selected = null; shopView = view; renderShop(); $("shop").hidden = false; $("shop").scrollTop = 0; }
+function closeShop() {
+  for (const id of ["shop", "menu"]) { const el = document.getElementById(id); if (el) el.hidden = true; }
+}
+
+// ---------------------------------------------------------------- save and continue
+// One save slot (localStorage "grubdef_save"): the board as it stood when the current wave started (field, nodes, units,
+// enemies still out, gold, upgrades and the run's counters). A snapshot is taken as every wave starts (startWave); quitting
+// during the countdown before a wave saves the board as it is. Continuing restores it, then a short countdown and the
+// wave starts as normal. The slot is cleared when a continued run ends.
+const SAVE_KEY = "grubdef_save";
+const SNAP_KEYS = ["wave", "hp", "maxHp", "gold", "summonCount", "expandCount", "loot", "pendingRewards", "waveExtras", "enemyCap", "bossTime", "bossLeft",
+  "lootBonus", "damageBonus", "heldBuildings", "upgrades", "charms", "pity", "goldFrac", "nodeHint", "itemsFound", "pendingEntries", "clock", "spawnList", "overTime", "expandEcho"];
+function takeSnap() {
+  const d = {};
+  for (const k of SNAP_KEYS) d[k] = S[k];
+  d.field = [...S.board.field]; d.nodes = [...S.board.nodes.values()]; d.burrow = S.burrow;
+  d.towers = [...S.towers.values()].map(t => ({ building: t.building, type: t.type, tier: t.tier, level: t.level, count: t.count, x: t.x, y: t.y }));
+  d.enemies = S.enemies.filter(e => e.hp > 0); d.bossIdx = d.enemies.indexOf(S.boss);
+  return JSON.parse(JSON.stringify(d));
+}
+function saveGame() {
+  const snap = !S.waveLive || !S.snap ? takeSnap() : S.snap; // in the countdown before a wave, the board as it is IS the wave start
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify({ v: 1, at: Date.now(), snap })); return true; } catch (_) { return false; }
+}
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY) || "null"); return s && s.v === 1 && s.snap && s.snap.field ? s : null; } catch (_) { return null; }
+}
+function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (_) {} }
+function continueGame() {
+  const sv = loadSave();
+  newGame();
+  if (!sv) return;
+  try {
+    const d = sv.snap;
+    for (const k of SNAP_KEYS) if (d[k] !== undefined) S[k] = d[k];
+    const b = new Board(1, 1);
+    b.field = new Set(d.field); b.nodes = new Map(d.nodes.map(n => [K(n.x, n.y), { ...n, born: time }]));
+    b.rebuild(); b.rebase(d.burrow); // the loop restarts at the burrow, as it did in the saved run
+    S.board = b; S.burrow = b.path.at(0);
+    S.towers = new Map(d.towers.map(t => [K(t.x, t.y), { ...t, cooldown: 0, pop: 1 }]));
+    S.enemies = d.enemies; S.boss = d.bossIdx >= 0 ? S.enemies[d.bossIdx] : null;
+    S.phase = "combat"; S.waveLive = false; S.prep = S.prepFull = CFG.resumePrep; S.waveTime = 0; S.resumed = true;
+    toast(`Welcome back! Wave ${S.wave} starts in ${CFG.resumePrep}s.`);
+  } catch (_) { newGame(); toast("The save couldn't be loaded: started a new run."); }
+}
+// Quit: ask first (the run is paused), then save and go to the menu.
+function askQuit() {
+  if (["over", "menu", "choosing", "shop"].includes(S.phase)) return;
+  const back = S.phase, had = !!loadSave(), w = !S.waveLive || !S.snap ? S.wave : S.snap.wave;
+  S.phase = "choosing"; S.expandMode = false; S.selected = null;
+  openModal("Save and quit?", `Your board is saved as it was when wave ${w} started: anything you do from then on is lost.${had ? "\nThis replaces your earlier save." : ""}`, [
+    { label: "Keep playing", onClick: () => { S.phase = back; closeModal(); } },
+    { label: "Save and quit", primary: true, onClick: () => { if (saveGame()) openMenu(); else { S.phase = back; closeModal(); toast("Couldn't save: browser storage is blocked."); } } },
+  ]);
+}
+
+// ---------------------------------------------------------------- start menu
+function openMenu() {
+  closeModal(); closeShop();
+  S.phase = "menu"; S.selected = null;
+  const grub = `<svg viewBox="0 0 150 70" aria-hidden="true">
+      <g><circle class="seg" cx="34" cy="42" r="16" fill="#e7cfe0" stroke="#9b6f8e" stroke-width="3"/>
+      <circle class="seg" cx="62" cy="38" r="20" fill="#e7cfe0" stroke="#9b6f8e" stroke-width="3"/>
+      <circle class="seg" cx="98" cy="34" r="25" fill="#e7cfe0" stroke="#9b6f8e" stroke-width="3"/></g>
+      <circle cx="106" cy="28" r="3.5" fill="#3a2a1c"/><path d="M96 40 q8 7 16 0" fill="none" stroke="#9b6f8e" stroke-width="3" stroke-linecap="round"/></svg>`;
+  const el = document.getElementById("menu"), save = loadSave();
+  el.innerHTML = `<div class="inner">${grub}
+    <h1>Grub Defense</h1>
+    <p>Summon, stack and merge defenders. Grow the battlefield. Waves arrive every ${CFG.waveDuration}s: keep the board under ${CFG.enemyCap} grubs.</p>
+    <div class="meta">Loot <b>${META.loot}</b></div>
+    ${save ? `<button class="primary" data-continue>Continue · wave ${save.snap.wave}</button><button class="secondary" data-play>New run</button>` : `<button class="primary" data-play>Play</button>`}
+    <div class="pair"><button class="secondary" data-sound>Sound: ${META.mute ? "off" : "on"}</button><button class="secondary" data-feedback>Feedback</button></div></div>`;
+  // Workshop, Research and Artifacts are hidden for now (not ready): put this row back under Play to bring them back
+  // <div class="trio"><button class="secondary" data-workshop>Workshop</button><button class="secondary" data-research>Research</button><button class="secondary" data-artifacts>Artifacts</button></div>
+  el.hidden = false;
+  el.querySelector("button.primary").focus();
+}
+document.getElementById("menu").addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  if ("play" in b.dataset) newGame();
+  else if ("continue" in b.dataset) continueGame();
+  else if ("sound" in b.dataset) { META.mute = !META.mute; saveMeta(); b.textContent = `Sound: ${META.mute ? "off" : "on"}`; }
+  else if ("feedback" in b.dataset) openFeedback();
+  else for (const v of ["workshop", "research", "artifacts"]) if (v in b.dataset) { document.getElementById("menu").hidden = true; openShop(v); }
+});
+
+// ---------------------------------------------------------------- feedback form
+// A full-frame panel that embeds the Google Form set in CFG.feedbackUrl (any form link works: "?embedded=true" is added).
+// The run is paused while it's open. With no URL set, the panel says so instead of showing a form.
+let feedbackOpen = false;
+function openFeedback() {
+  const url = CFG.feedbackUrl.trim(), body = $("fbBody"), link = $("fbLink");
+  if (url) {
+    const src = /[?&]embedded=true/.test(url) ? url : url + (url.includes("?") ? "&" : "?") + "embedded=true";
+    body.innerHTML = `<iframe title="Feedback form" src="${src}">Loading…</iframe>`;
+    link.href = url; link.hidden = false;
+  } else {
+    body.innerHTML = `<div class="empty">The feedback form isn't set up yet.<br>Set CFG.feedbackUrl to a Google Form link.</div>`;
+    link.hidden = true;
+  }
+  $("feedback").hidden = false; feedbackOpen = true;
+  $("fbClose").focus();
+}
+function closeFeedback() { $("feedback").hidden = true; $("fbBody").innerHTML = ""; feedbackOpen = false; }
+$("fbClose").addEventListener("click", closeFeedback);
+$("shop").addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (!b || b.disabled) return;
+  const d = b.dataset;
+  if (d.buy) {
+    const w = WORKSHOP[d.buy], l = wl(d.buy), c = w.cost(l);
+    if (META.loot >= c && l < w.max) { META.loot -= c; META.workshop[d.buy] = l + 1; }
+  } else if (d.unlock) {
+    const a = ARTIFACTS[d.unlock];
+    if (META.loot >= a.unlock) { META.loot -= a.unlock; META.artifacts[d.unlock] = 1; if (META.equipped.length < ARTIFACT_SLOTS) META.equipped.push(d.unlock); }
+  } else if (d.up) {
+    const a = ARTIFACTS[d.up], l = META.artifacts[d.up], c = a.upCost(l);
+    if (META.loot >= c && l < a.max) { META.loot -= c; META.artifacts[d.up] = l + 1; }
+  } else if (d.equip) {
+    const i = META.equipped.indexOf(d.equip);
+    if (i >= 0) META.equipped.splice(i, 1); else if (META.equipped.length < ARTIFACT_SLOTS) META.equipped.push(d.equip);
+  } else if (d.research) {
+    const r = RESEARCH[d.research], l = rl(d.research), c = r.cost(l);
+    if (META.loot >= c && l < r.max && !(r.needs && !rl(r.needs))) { META.loot -= c; META.research[d.research] = l + 1; }
+  } else if ("menu" in d) { openMenu(); return; }
+  saveMeta(); renderShop();
+});
+
+// ---------------------------------------------------------------- input
+els.summon.addEventListener("click", summon);
+els.expand.addEventListener("click", () => { S.expandEcho = false; if (S.phase !== "build" && !(S.mode === "timed" && S.phase === "combat")) return; S.expandMode = !S.expandMode; S.selected = null; });
+// the buttons over the selected unit: Sell one unit, Merge the stack, or Craft a recipe
+els.ubtns.addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (!b || b.disabled) return;
+  if ("sell" in b.dataset) sell(); else if ("merge" in b.dataset) merge();
+});
+// the info pill's tags open (or close) their description
+els.info.addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-tag]");
+  if (b) S.infoTag = S.infoTag === b.dataset.tag ? null : b.dataset.tag;
+});
+// cycles through the speeds Research has unlocked
+els.speed.addEventListener("click", () => { const sp = speeds(); S.speed = sp[(sp.indexOf(S.speed) + 1) % sp.length]; });
+els.sound.addEventListener("click", () => { META.mute = !META.mute; saveMeta(); }); // the click tick plays when sound is turned on
+els.fb.addEventListener("click", openFeedback);
+els.quit.addEventListener("click", askQuit);
+els.upgBtn.addEventListener("click", () => { els.upg.hidden = !els.upg.hidden; els.gam.hidden = true; delete cache.upg; });
+els.gamBtn.addEventListener("click", () => { els.gam.hidden = !els.gam.hidden; els.upg.hidden = true; delete cache.gam; });
+els.gam.addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (!b || b.disabled) return;
+  if (b.dataset.gamble) gamble(b.dataset.gamble, b);
+  else if ("close" in b.dataset) els.gam.hidden = true;
+});
+els.upg.addEventListener("click", ev => {
+  const b = ev.target.closest("button");
+  if (!b || b.disabled) return;
+  if (b.dataset.up) buyUpgrade(b.dataset.up);
+  else if ("close" in b.dataset) els.upg.hidden = true;
+});
+
+function pointerCell(ev) {
+  const r = canvas.getBoundingClientRect();
+  const w = toWorld((ev.clientX - r.left) * W / r.width, (ev.clientY - r.top) * H / r.height); // screen px -> frame units
+  return { world: w, cell: [Math.floor(w[0]), Math.floor(w[1])] };
+}
+// Pointer position in frame units (the same units as W and H).
+function framePt(ev) { const r = canvas.getBoundingClientRect(); return [(ev.clientX - r.left) * W / r.width, (ev.clientY - r.top) * H / r.height]; }
+// The view: a drag on empty space pans (a tap there still deselects or buys the tile), a middle or right drag pans from
+// anywhere, two fingers pinch-zoom and pan, and the wheel zooms at the cursor. A drag that starts on a unit moves it.
+const pts = new Map(); // pointers currently down on the board, in frame units
+let pinch = null, panned = false; // pinch: the last two-finger distance and midpoint; panned: the last press moved the view
+const mid = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2 }; };
+canvas.addEventListener("pointerdown", ev => {
+  if (S.phase === "over" || S.phase === "choosing" || S.phase === "shop" || S.phase === "menu") return;
+  pts.set(ev.pointerId, framePt(ev)); panned = false;
+  if (pts.size >= 2) { S.drag = null; S.pan = null; pinch = mid(); return; } // a second finger turns whatever the first began into a pinch
+  const { world, cell } = pointerCell(ev), k = K(cell[0], cell[1]);
+  canvas.setPointerCapture(ev.pointerId);
+  if (ev.button === 1 || ev.button === 2) { S.pan = { moved: true, last: framePt(ev) }; return; }
+  if (S.expandMode && S.board.isExpandable(cell[0], cell[1])) {
+    S.pan = { moved: false, sx: ev.clientX, sy: ev.clientY, last: framePt(ev), tap: () => { buyExpansion(cell[0], cell[1]); S.selected = null; } };
+  } else if (S.towers.has(k)) {
+    S.expandMode = false;
+    S.drag = { from: k, sx: ev.clientX, sy: ev.clientY, moved: false, world };
+  } else S.pan = { moved: false, sx: ev.clientX, sy: ev.clientY, last: framePt(ev), tap: () => { S.selected = null; S.expandMode = false; } };
+});
+canvas.addEventListener("pointermove", ev => {
+  if (pts.has(ev.pointerId)) pts.set(ev.pointerId, framePt(ev));
+  if (pinch && pts.size >= 2) { // pinch: zoom about the midpoint and follow it
+    const m = mid(); zoomAt(m.d / pinch.d, m.x, m.y); panBy(m.x - pinch.x, m.y - pinch.y); pinch = m; panned = true; return;
+  }
+  if (S.pan) {
+    const p = S.pan;
+    if (!p.moved && Math.hypot(ev.clientX - p.sx, ev.clientY - p.sy) > 8) p.moved = true;
+    if (p.moved) { const f = framePt(ev); panBy(f[0] - p.last[0], f[1] - p.last[1]); p.last = f; panned = true; }
+    return;
+  }
+  if (!S.drag) return;
+  if (!S.drag.moved && Math.hypot(ev.clientX - S.drag.sx, ev.clientY - S.drag.sy) > 8) S.drag.moved = true;
+  if (S.drag.moved) S.drag.world = pointerCell(ev).world;
+});
+function endDrag(ev) {
+  pts.delete(ev.pointerId);
+  if (pts.size < 2) pinch = null;
+  if (S.pan) { const p = S.pan; S.pan = null; if (!p.moved && p.tap && !panned) p.tap(); return; }
+  if (!S.drag) return;
+  const d = S.drag; S.drag = null;
+  if (!S.towers.has(d.from)) return;
+  if (d.moved) {
+    const { cell } = pointerCell(ev);
+    if (S.board.has(cell[0], cell[1]) && K(cell[0], cell[1]) !== d.from) moveTower(d.from, cell[0], cell[1]);
+  } else S.selected = S.selected === d.from ? null : d.from;
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", ev => { pts.delete(ev.pointerId); pinch = null; S.drag = null; S.pan = null; });
+canvas.addEventListener("contextmenu", ev => { ev.preventDefault(); if (!panned) S.selected = null; });
+canvas.addEventListener("wheel", ev => { ev.preventDefault(); const p = framePt(ev); zoomAt(Math.exp(-Math.max(-200, Math.min(200, ev.deltaY)) * 0.0015), p[0], p[1]); }, { passive: false });
+$("zIn").addEventListener("click", () => zoomAt(1.3, W / 2, H / 2));
+$("zOut").addEventListener("click", () => zoomAt(1 / 1.3, W / 2, H / 2));
+$("zFit").addEventListener("click", resetView);
+
+// ---------------------------------------------------------------- main loop
+let last = performance.now(), firstFrame = true;
+function frame(now) {
+  const rdt = Math.min(0.05, (now - last) / 1000); last = now; time += rdt;
+  if (feedbackOpen) { /* the feedback form pauses the run */ }
+  else if (S.phase === "combat") {
+    // sub-step at higher speeds for stable combat
+    const steps = S.speed * CFG.baseSpeed;
+    for (let i = 0; i < steps && S.phase === "combat"; i++) tickCombat(rdt);
+  } else tickIdle(rdt * CFG.baseSpeed);
+  for (let i = S.flashes.length - 1; i >= 0; i--) if ((S.flashes[i].ttl -= rdt) <= 0) S.flashes.splice(i, 1);
+  for (let i = S.hits.length - 1; i >= 0; i--) if ((S.hits[i].ttl -= rdt) <= 0) S.hits.splice(i, 1);
+  for (let i = S.corpses.length - 1; i >= 0; i--) if ((S.corpses[i].ttl -= rdt) <= 0) S.corpses.splice(i, 1);
+  for (const t of S.towers.values()) if (t.atkT) t.atkT = Math.max(0, t.atkT - rdt * 6);
+  for (const t of S.towers.values()) { // units walk to their tile at a steady pace
+    if (!t.vis) continue;
+    const c = center(t.x, t.y), dx = c[0] - t.vis[0], dy = c[1] - t.vis[1], d = Math.hypot(dx, dy), step = 4 * rdt;
+    if (d <= step) t.vis = c; else { t.vis[0] += dx / d * step; t.vis[1] += dy / d * step; }
+  }
+  for (let i = S.coins.length - 1; i >= 0; i--) { // pop up, bounce once, fade
+    const c = S.coins[i];
+    c.vz -= 9 * rdt; c.z += c.vz * rdt; c.x += c.vx * rdt * 0.4;
+    if (c.z < 0) { c.z = 0; c.vz = -c.vz * 0.35; }
+    if ((c.ttl -= rdt) <= 0) S.coins.splice(i, 1);
+  }
+  for (let i = S.toasts.length - 1; i >= 0; i--) if ((S.toasts[i].ttl -= rdt) <= 0) S.toasts.splice(i, 1);
+  if (W > 0) { fitCamera(rdt, firstFrame); firstFrame = false; draw(); drawFlyers(); }
+  updateHUD();
+  requestAnimationFrame(frame);
+}
+
+newGame();
+openMenu(); // the game opens on the start menu
+fitFrame(); resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
